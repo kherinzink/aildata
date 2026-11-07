@@ -10,14 +10,13 @@ export interface DynamicRecord {
   updatedAt?: string;
 }
 
-// Web localStorage implementation with test1.ods seeded detainee records
+// Web localStorage implementation with test1.ods seeded detainee records and high-performance batching
 class WebStorage {
   async init() {
     try {
       const storageKey = 'aildata_records_v2';
       const raw = localStorage.getItem(storageKey);
       if (!raw) {
-        // Seed with test1.ods parsed record
         const defaultRecord: DynamicRecord = {
           id: 'det_0_bob_dole',
           category: 'detainee_record',
@@ -62,6 +61,23 @@ class WebStorage {
     return id;
   }
 
+  async insertBatch(category: string, rows: Record<string, any>[]): Promise<number> {
+    const storageKey = 'aildata_records_v2';
+    const existing = await this.getAll();
+
+    const newRecords: DynamicRecord[] = rows.map((row, idx) => ({
+      id: `rec_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
+      category,
+      dataJson: JSON.stringify(row),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
+
+    const updated = [...newRecords, ...existing];
+    localStorage.setItem(storageKey, JSON.stringify(updated));
+    return newRecords.length;
+  }
+
   async getAll(category?: string): Promise<DynamicRecord[]> {
     try {
       await this.init();
@@ -76,6 +92,12 @@ class WebStorage {
     } catch {
       return [];
     }
+  }
+
+  async clear(): Promise<void> {
+    const storageKey = 'aildata_records_v2';
+    localStorage.removeItem(storageKey);
+    await this.init();
   }
 
   async getTables(): Promise<string[]> {
@@ -120,6 +142,34 @@ export async function insertRecord(category: string, data: Record<string, any>):
   return id;
 }
 
+export async function insertBatchRecords(category: string, rows: Record<string, any>[]): Promise<number> {
+  if (Platform.OS === 'web') {
+    return await webStorage.insertBatch(category, rows);
+  }
+
+  await initializeDatabase();
+  const db = await getDatabase();
+  
+  // Native SQLite batch transaction
+  await db.execAsync('BEGIN TRANSACTION;');
+  try {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const id = `rec_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 5)}`;
+      const dataJson = JSON.stringify(row);
+      await db.runAsync(
+        'INSERT INTO dynamic_records (id, category, data_json, created_at, updated_at) VALUES (?, ?, ?, datetime("now"), datetime("now"));',
+        [id, category, dataJson]
+      );
+    }
+    await db.execAsync('COMMIT;');
+    return rows.length;
+  } catch (e) {
+    await db.execAsync('ROLLBACK;');
+    throw e;
+  }
+}
+
 export async function getRecords(category?: string): Promise<DynamicRecord[]> {
   if (Platform.OS === 'web') {
     return await webStorage.getAll(category);
@@ -138,6 +188,16 @@ export async function getRecords(category?: string): Promise<DynamicRecord[]> {
   
   const rows = await db.getAllAsync<any>(query, params);
   return rows;
+}
+
+export async function clearDatabase(): Promise<void> {
+  if (Platform.OS === 'web') {
+    await webStorage.clear();
+    return;
+  }
+  await initializeDatabase();
+  const db = await getDatabase();
+  await db.execAsync('DELETE FROM dynamic_records;');
 }
 
 export async function getTableNames(): Promise<string[]> {

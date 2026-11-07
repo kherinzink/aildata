@@ -4,9 +4,10 @@ import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput, SafeAr
 import { initializeDatabase, getTableNames, getRecords, insertRecord, getStorageMode, DynamicRecord } from './src/services/dataService';
 import { SpreadsheetView } from './src/views/SpreadsheetView';
 import { DashboardView } from './src/views/DashboardView';
+import { ImportFileView } from './src/views/ImportFileView';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'spreadsheet' | 'insert'>('spreadsheet');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'spreadsheet' | 'insert' | 'import'>('spreadsheet');
   const [dbStatus, setDbStatus] = useState<string>('Initializing...');
   const [storageMode, setStorageMode] = useState<string>('');
   const [tables, setTables] = useState<string[]>([]);
@@ -86,6 +87,13 @@ export default function App() {
         </TouchableOpacity>
 
         <TouchableOpacity 
+          style={[styles.tab, activeTab === 'import' && styles.activeTab]} 
+          onPress={() => setActiveTab('import')}
+        >
+          <Text style={[styles.tabText, activeTab === 'import' && styles.activeTabText]}>📂 Import File</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
           style={[styles.tab, activeTab === 'insert' && styles.activeTab]} 
           onPress={() => setActiveTab('insert')}
         >
@@ -96,7 +104,8 @@ export default function App() {
       {/* Active View Content */}
       <View style={styles.contentContainer}>
         {activeTab === 'spreadsheet' && <SpreadsheetView records={records} />}
-        {activeTab === 'dashboard' && <DashboardView records={records} storageMode={storageMode} tables={tables} />}
+        {activeTab === 'dashboard' && <DashboardView records={records} storageMode={storageMode} tables={tables} onDataChanged={loadData} />}
+        {activeTab === 'import' && <ImportFileView onImportComplete={loadData} />}
         {activeTab === 'insert' && (
           <ScrollView contentContainerStyle={styles.insertContainer}>
             <Text style={styles.sectionTitle}>Add New Record</Text>
