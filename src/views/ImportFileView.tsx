@@ -54,7 +54,7 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
         if (!isSelected) continue;
 
         const worksheet = fileData.workbook.Sheets[sheetName];
-        const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, { raw: false, dateNF: 'yyyy-mm-dd' });
+        const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, { raw: false, dateNF: 'yyyy-mm-dd', range: 1 });
 
         const validRows: Record<string, any>[] = [];
         for (const row of jsonRows) {

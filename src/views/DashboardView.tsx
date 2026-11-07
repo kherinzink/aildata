@@ -25,6 +25,7 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
     
     let currentCount = 0;
     let releasedCount = 0;
+    let currentWithPenpalCount = 0;
     const today = new Date('2026-11-02'); // Current session date
 
     records.forEach(r => {
@@ -59,18 +60,35 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
           }
         }
 
+        let isCurrent = false;
         if (!depDateStr || depDateStr.trim() === '' || depDateStr.toLowerCase() === 'present' || depDateStr.toLowerCase() === 'today' || depDateStr.toLowerCase() === 'ongoing') {
+          isCurrent = true;
           currentCount++;
         } else {
           // Parse date
           const depDate = new Date(depDateStr);
           if (isNaN(depDate.getTime())) {
+            isCurrent = true;
             currentCount++;
           } else if (depDate <= today) {
             releasedCount++;
           } else {
+            isCurrent = true;
             currentCount++;
           }
+        }
+
+        // Check if has penpal
+        let hasPenpal = false;
+        for (const [k, v] of Object.entries(data)) {
+          if (k.toLowerCase().includes('penpal') && v !== null && v !== undefined && String(v).trim() !== '') {
+            hasPenpal = true;
+            break;
+          }
+        }
+
+        if (isCurrent && hasPenpal) {
+          currentWithPenpalCount++;
         }
       } catch {
         currentCount++;
@@ -80,8 +98,9 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
     const topCountries = Object.entries(countries).sort((a, b) => b[1] - a[1]).slice(0, 5);
     const topAgencies = Object.entries(agencies).sort((a, b) => b[1] - a[1]).slice(0, 5);
     const sexDistribution = Object.entries(sexes).sort((a, b) => b[1] - a[1]);
+    const penpalPercentage = currentCount > 0 ? ((currentWithPenpalCount / currentCount) * 100).toFixed(1) : '0.0';
 
-    return { topCountries, topAgencies, sexDistribution, currentCount, releasedCount };
+    return { topCountries, topAgencies, sexDistribution, currentCount, releasedCount, penpalPercentage };
   }, [records]);
 
   const handleClearDatabase = async () => {
@@ -117,6 +136,10 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🔴 Released / Transferred</Text>
           <Text style={[styles.cardValue, { color: '#991b1b' }]}>{analytics.releasedCount.toLocaleString()}</Text>
+        </View>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>✉️ Current with Penpals</Text>
+          <Text style={[styles.cardValue, { color: '#2563eb' }]}>{analytics.penpalPercentage}%</Text>
         </View>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Storage Engine</Text>

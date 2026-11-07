@@ -18,7 +18,7 @@ function formatCell(val: any): string {
   return String(val);
 }
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 10;
 
 export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -254,8 +254,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
   },
   cell: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
     justifyContent: 'center',
   },
   idCell: {
