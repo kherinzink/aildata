@@ -1,7 +1,7 @@
 import pandas as pd
 import sys
 
-ods_path = '/mnt/c/Users/khani/OneDrive/test1.ods'
+ods_path = './test1.ods'
 
 try:
     xl = pd.ExcelFile(ods_path, engine='odf')

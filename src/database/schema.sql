@@ -79,3 +79,12 @@ CREATE TABLE IF NOT EXISTS correspondence (
     loc_note TEXT,
     FOREIGN KEY(detainee_id) REFERENCES detainees(id) ON DELETE CASCADE
 );
+
+-- 4. Users & Authentication (Email-based accounts & RBAC)
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

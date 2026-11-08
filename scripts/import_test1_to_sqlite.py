@@ -3,7 +3,7 @@ import json
 import sqlite3
 import os
 
-ods_path = '/mnt/c/Users/khani/OneDrive/test1.ods'
+ods_path = os.path.join(os.path.dirname(__file__), '../test1.ods')
 db_path = os.path.join(os.path.dirname(__file__), '../aildata.db')
 
 print(f"Reading ODS from: {ods_path}")
