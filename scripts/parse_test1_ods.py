@@ -2,7 +2,7 @@ import pandas as pd
 import json
 import sqlite3
 
-ods_path = '/mnt/c/Users/khani/OneDrive/test1.ods'
+ods_path = './test1.ods'
 
 # Read Sheet1
 df = pd.read_excel(ods_path, sheet_name='Sheet1', engine='odf')

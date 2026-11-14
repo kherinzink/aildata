@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity } from 'react-native';
-import { DynamicRecord, clearDatabase } from '../services/dataService';
+import { DynamicRecord, clearDatabase, deleteCategoryRecords } from '../services/dataService';
 
 interface DashboardViewProps {
   records: DynamicRecord[];
@@ -119,6 +119,22 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
     }
   };
 
+  const handleDeleteCategory = async (cat: string) => {
+    const confirmDelete = window.confirm 
+      ? window.confirm(`Are you sure you want to delete all records for imported sheet "${cat}"?`) 
+      : true;
+
+    if (confirmDelete) {
+      try {
+        await deleteCategoryRecords(cat);
+        await onDataChanged();
+        alert(`Successfully deleted records for "${cat}".`);
+      } catch (e: any) {
+        alert(`Failed to delete records: ${e.message}`);
+      }
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>System Overview & Custody Analytics</Text>
@@ -198,11 +214,16 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
 
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>📁 Active Sheets & Tables</Text>
+          <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>Click any imported sheet badge below to delete its records:</Text>
           <View style={styles.badgeContainer}>
             {categories.map(cat => (
-              <View key={cat} style={styles.categoryBadge}>
-                <Text style={styles.categoryText}>{cat} ({records.filter(r => r.category === cat).length})</Text>
-              </View>
+              <TouchableOpacity 
+                key={cat} 
+                style={[styles.categoryBadge, { backgroundColor: '#fef2f2', borderColor: '#fecaca' }]} 
+                onPress={() => handleDeleteCategory(cat)}
+              >
+                <Text style={[styles.categoryText, { color: '#991b1b' }]}>{cat} ({records.filter(r => r.category === cat).length}) 🗑️</Text>
+              </TouchableOpacity>
             ))}
           </View>
           <Text style={[styles.sectionTitle, { marginTop: 16 }]}>🗄️ Relational Entities</Text>
