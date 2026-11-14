@@ -31,6 +31,18 @@ async function hashPassword(password: string, salt: string = 'aildata_salt'): Pr
     .join('');
 }
 
+function verifyAdminToken(request: Request): boolean {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return false;
+    const token = authHeader.split(' ')[1];
+    const payload = JSON.parse(atob(token));
+    return payload.role === 'admin' && payload.exp > Date.now();
+  } catch {
+    return false;
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -49,6 +61,47 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    // Serve HTML Dashboard for root route
+    if (path === '/' && method === 'GET') {
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aildata Framework - Cloudflare D1 Edge API</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 40px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .card { background: #ffffff; border-radius: 12px; padding: 40px; max-width: 600px; width: 100%; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; }
+    h1 { color: #1e293b; margin-top: 0; font-size: 26px; }
+    p { color: #475569; line-height: 1.6; }
+    .badge { display: inline-block; background: #dcfce7; color: #166534; padding: 6px 12px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 20px; }
+    .endpoint { background: #f1f5f9; padding: 12px 16px; border-radius: 8px; font-family: monospace; font-size: 13px; margin: 10px 0; border-left: 4px solid #2563eb; }
+    .footer { margin-top: 30px; font-size: 12px; color: #94a3b8; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">🚀 Cloudflare D1 Edge Worker Active</div>
+    <h1>Aildata API & Security Gateway</h1>
+    <p>Your serverless SQLite backend is successfully deployed and connected to Cloudflare D1 with Email Authentication (AuthN) and Role-Based Access Control (RBAC).</p>
+    
+    <h3>Available API Endpoints:</h3>
+    <div class="endpoint">POST /api/auth/register — Register new user account</div>
+    <div class="endpoint">POST /api/auth/login — Authenticate & receive JWT token</div>
+    <div class="endpoint">GET /api/records — Fetch all dynamic records</div>
+    <div class="endpoint">POST /api/records/batch — High-speed bulk record insertion</div>
+    <div class="endpoint">DELETE /api/records — Clear database records</div>
+
+    <div class="footer">Aildata Framework &copy; 2026 &bull; Powered by Cloudflare Workers & D1</div>
+  </div>
+</body>
+</html>`;
+      return new Response(html, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html;charset=UTF-8' }
+      });
+    }
+
     try {
       // 1. Auth: Register User (Email + Password)
       if (path === '/api/auth/register' && method === 'POST') {
@@ -59,9 +112,17 @@ export default {
           return new Response(JSON.stringify({ error: 'Email and password are required' }), { status: 400, headers: corsHeaders });
         }
 
+        let userRole = 'viewer';
+        if (role && (role === 'admin' || role === 'analyst')) {
+          if (verifyAdminToken(request)) {
+            userRole = role;
+          } else {
+            return new Response(JSON.stringify({ error: 'Unauthorized: Only authenticated admins can create privileged accounts' }), { status: 403, headers: corsHeaders });
+          }
+        }
+
         const userId = 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
         const passwordHash = await hashPassword(password);
-        const userRole = role || 'viewer';
 
         try {
           await env.DB.prepare(

@@ -1,12 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput, SafeAreaView } from 'react-native';
-import { initializeDatabase, getTableNames, getRecords, insertRecord, getStorageMode, DynamicRecord } from './src/services/dataService';
+import { initializeDatabase, getTableNames, getRecords, insertRecord, getStorageMode, getAuthToken, getAuthUser, logoutUser, DynamicRecord } from './src/services/dataService';
 import { SpreadsheetView } from './src/views/SpreadsheetView';
 import { DashboardView } from './src/views/DashboardView';
 import { ImportFileView } from './src/views/ImportFileView';
+import { AuthView } from './src/views/AuthView';
+
+const API_CONFIGURED = !!process.env.EXPO_PUBLIC_API_BASE_URL;
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!API_CONFIGURED || !!getAuthToken());
+  const [currentUser, setCurrentUser] = useState<{ email?: string | null; role?: string | null } | null>(getAuthUser());
+
   const [activeTab, setActiveTab] = useState<'dashboard' | 'spreadsheet' | 'insert' | 'import'>('spreadsheet');
   const [dbStatus, setDbStatus] = useState<string>('Initializing...');
   const [storageMode, setStorageMode] = useState<string>('');
@@ -33,11 +39,29 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (isAuthenticated) {
+      loadData();
+    }
+  }, [isAuthenticated]);
+
+  const handleLoginSuccess = () => {
+    setIsAuthenticated(true);
+    setCurrentUser(getAuthUser());
     loadData();
-  }, []);
+  };
+
+  const handleLogout = () => {
+    logoutUser();
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+  };
 
   const handleAddRecord = async () => {
     if (!inputName) return;
+    if (currentUser?.role === 'viewer') {
+      alert('Access denied: Viewers cannot add records.');
+      return;
+    }
     try {
       await insertRecord('detainee_record', {
         "Name (From Jail Tracker)": inputName,
@@ -55,6 +79,18 @@ export default function App() {
     }
   };
 
+  if (API_CONFIGURED && !isAuthenticated) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar style="dark" />
+        <AuthView onLoginSuccess={handleLoginSuccess} />
+      </SafeAreaView>
+    );
+  }
+
+  const role = currentUser?.role || 'admin';
+  const canModify = role === 'admin' || role === 'analyst';
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
@@ -65,8 +101,20 @@ export default function App() {
           <Text style={styles.title}>Aildata Workspace</Text>
           <Text style={styles.subtitle}>Secure Database & Spreadsheet Framework</Text>
         </View>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{dbStatus} | {storageMode}</Text>
+        <View style={styles.headerRight}>
+          {currentUser?.email && (
+            <View style={styles.userBadge}>
+              <Text style={styles.userText}>{currentUser.email} ({role.toUpperCase()})</Text>
+            </View>
+          )}
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{dbStatus} | {storageMode}</Text>
+          </View>
+          {API_CONFIGURED && (
+            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+              <Text style={styles.logoutText}>Sign Out</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -86,27 +134,31 @@ export default function App() {
           <Text style={[styles.tabText, activeTab === 'dashboard' && styles.activeTabText]}>📈 Dashboard</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={[styles.tab, activeTab === 'import' && styles.activeTab]} 
-          onPress={() => setActiveTab('import')}
-        >
-          <Text style={[styles.tabText, activeTab === 'import' && styles.activeTabText]}>📂 Import File</Text>
-        </TouchableOpacity>
+        {canModify && (
+          <TouchableOpacity 
+            style={[styles.tab, activeTab === 'import' && styles.activeTab]} 
+            onPress={() => setActiveTab('import')}
+          >
+            <Text style={[styles.tabText, activeTab === 'import' && styles.activeTabText]}>📂 Import File</Text>
+          </TouchableOpacity>
+        )}
 
-        <TouchableOpacity 
-          style={[styles.tab, activeTab === 'insert' && styles.activeTab]} 
-          onPress={() => setActiveTab('insert')}
-        >
-          <Text style={[styles.tabText, activeTab === 'insert' && styles.activeTabText]}>➕ Add Record</Text>
-        </TouchableOpacity>
+        {canModify && (
+          <TouchableOpacity 
+            style={[styles.tab, activeTab === 'insert' && styles.activeTab]} 
+            onPress={() => setActiveTab('insert')}
+          >
+            <Text style={[styles.tabText, activeTab === 'insert' && styles.activeTabText]}>➕ Add Record</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Active View Content */}
       <View style={styles.contentContainer}>
         {activeTab === 'spreadsheet' && <SpreadsheetView records={records} />}
         {activeTab === 'dashboard' && <DashboardView records={records} storageMode={storageMode} tables={tables} onDataChanged={loadData} />}
-        {activeTab === 'import' && <ImportFileView onImportComplete={loadData} />}
-        {activeTab === 'insert' && (
+        {activeTab === 'import' && canModify && <ImportFileView onImportComplete={loadData} />}
+        {activeTab === 'insert' && canModify && (
           <ScrollView contentContainerStyle={styles.insertContainer}>
             <Text style={styles.sectionTitle}>Add New Record</Text>
             
@@ -161,6 +213,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   title: {
     fontSize: 20,
     fontWeight: 'bold',
@@ -171,14 +227,40 @@ const styles = StyleSheet.create({
     color: '#64748b',
     marginTop: 2,
   },
+  userBadge: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  userText: {
+    color: '#1d4ed8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
   badge: {
     backgroundColor: '#dcfce7',
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 16,
+    marginRight: 8,
   },
   badgeText: {
     color: '#166534',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  logoutButton: {
+    backgroundColor: '#fee2e2',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
+  },
+  logoutText: {
+    color: '#991b1b',
     fontSize: 11,
     fontWeight: '600',
   },

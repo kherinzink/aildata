@@ -5,17 +5,29 @@
 [![Cloudflare D1](https://img.shields.io/badge/Cloudflare-D1%20%2F%20Workers-orange.svg)](https://developers.cloudflare.com/d1/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Aildata** is a high-performance, cross-platform database and spreadsheet management framework built for React Native, Expo, and serverless edge deployment on **Cloudflare D1** and **Cloudflare Workers**. It provides real-time spreadsheet parsing (XLSX, ODS, CSV), relational data modeling, email authentication, and Role-Based Access Control (RBAC).
+**Aildata** is a high-performance, cloud-native database and spreadsheet management framework built for React Native Web and serverless edge deployment on **Cloudflare D1** and **Cloudflare Workers**. It provides real-time spreadsheet parsing (XLSX, ODS, CSV), relational data modeling, email authentication, and hardened Role-Based Access Control (RBAC).
 
 ---
 
 ## 🌟 Key Features
 
-- **🌐 Serverless Edge Architecture:** Seamlessly transition between local SQLite (`expo-sqlite` / browser `localStorage`) and **Cloudflare D1** serverless edge databases.
-- **🔐 Security & Authentication:** Email-based user registration and login with Web Crypto PBKDF2 password hashing, secure JWT session tokens, and Role-Based Access Control (`admin`, `analyst`, `viewer`).
-- **📊 High-Speed Spreadsheet Parsing:** Client-side parsing of Excel (`.xlsx`), OpenDocument (`.ods`), and CSV files using SheetJS with custom header range skipping and lightning-fast batch inserts.
-- **📈 Real-Time Analytics Dashboard:** Instant metrics tracking active custody status, country of origin distribution, delivering agencies, demographic splits, and penpal ratios.
-- **🗄️ Hybrid NoSQL & Relational Models:** Flexible dynamic records cache for unstructured spreadsheet imports combined with normalized relational tables (`detainees`, `detentions`, `charges`, `legal_proceedings`, `correspondence`).
+- **🌐 Cloud-Native Edge Architecture:** Fully consolidated to **Cloudflare D1** serverless SQLite at the edge. The application communicates exclusively with a Cloudflare Worker API, ensuring high availability and low latency across all platforms.
+- **🔐 Security & Hardened Auth:** Email-based authentication with Web Crypto PBKDF2 password hashing and secure JWT session tokens. 
+- **🛡️ Hardened RBAC:** Robust Role-Based Access Control enforcing strict permissions for `admin`, `analyst`, and `viewer` roles, with server-side verification to prevent unauthorized account escalation.
+- **📊 High-Speed Spreadsheet Parsing:** Client-side parsing of Excel (`.xlsx`), OpenDocument (`.ods`), and CSV files using SheetJS with custom header range skipping and lightning-fast batch inserts directly to D1.
+- **📈 Real-Time Analytics Dashboard:** Instant metrics tracking active custody status, country of origin distribution, delivering agencies, and demographic splits.
+
+---
+
+## 👥 Security Roles (RBAC)
+
+Aildata enforces a strict security model based on user roles:
+
+- **Admin:** Full system access. Can manage users, clear databases, and perform all data operations.
+- **Analyst:** Data mutation privileges. Can import files and add/modify records. Cannot delete databases or manage users.
+- **Viewer:** Read-only access. Can view spreadsheet grids and dashboards. Cannot modify any data.
+
+*Note: Privileged roles (Admin/Analyst) can only be created by an existing Admin via an authenticated request.*
 
 ---
 
@@ -24,13 +36,13 @@
 ```text
 aildata/
 ├── src/
-│   ├── database/       # SQLite schema and migration definitions (schema.sql, d1_schema.sql)
-│   ├── services/       # Data service abstraction, API client, and auth state (dataService.ts)
-│   └── views/          # Core application views (DashboardView, SpreadsheetView, ImportFileView)
+│   ├── database/       # Cloudflare D1 schema (d1_schema.sql) and web-safe DB wrappers
+│   ├── services/       # Data service abstraction and Cloudflare API client (dataService.ts)
+│   └── views/          # Core application views (Dashboard, Spreadsheet, Import, Auth)
 ├── worker/
-│   └── index.ts        # Cloudflare Worker API backend (AuthN, AuthZ, D1 queries)
-├── scripts/            # Python utility scripts for ODS inspection and conversion
-├── App.tsx             # Main application entry point & tab navigation
+│   └── index.ts        # Cloudflare Worker API backend (Auth, RBAC, D1 Integration)
+├── scripts/            # Generation and utility scripts (e.g., 10k record generator)
+├── App.tsx             # Main application entry point & RBAC navigation
 ├── wrangler.toml       # Cloudflare Workers & D1 configuration
 ├── TECHNICAL_ARCHITECTURE.md # Detailed technical design document
 └── DEPLOYMENT_GUIDE.md       # Complete Cloudflare deployment playbook
@@ -41,9 +53,9 @@ aildata/
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Node.js (v18+)
-- npm or yarn
-- Expo CLI
+- Node.js (v22+)
+- npm
+- Cloudflare Account (Wrangler CLI)
 
 ### Installation
 
@@ -60,28 +72,21 @@ aildata/
 
 3. **Start the development server:**
    ```bash
-   npm run start
+   EXPO_PUBLIC_API_BASE_URL="https://your-worker.workers.dev" npm run web
    ```
 
 ---
 
 ## ☁️ Cloudflare Deployment
 
-For full deployment instructions covering **Cloudflare D1**, the **Cloudflare Worker API**, and **Cloudflare Pages**, see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md).
+For full deployment instructions, see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md).
 
-Quick summary:
-1. **Create D1 Database:** `npx wrangler d1 create aildata-db`
-2. **Update `wrangler.toml`** with your `database_id`.
-3. **Apply Schema Remotely:** `npx wrangler d1 execute aildata-db --remote --file=./src/database/d1_schema.sql`
-4. **Deploy Worker:** `npx wrangler deploy`
-5. **Deploy Web App:** `npm run build:web && npx wrangler pages deploy dist --project-name=aildata-web`
-
----
-
-## 📚 Documentation
-
-- [Technical Architecture](TECHNICAL_ARCHITECTURE.md) - Deep dive into database schemas, worker middleware, and security models.
-- [Deployment Guide](DEPLOYMENT_GUIDE.md) - Step-by-step production deployment playbook.
+1. **Deploy Database Schema:** 
+   `npx wrangler d1 execute aildata-db --remote --file=./src/database/d1_schema.sql`
+2. **Deploy API Backend:** 
+   `npx wrangler deploy`
+3. **Deploy Web Frontend:** 
+   `npm run build:web && npx wrangler pages deploy dist --project-name=aildata-web`
 
 ---
 

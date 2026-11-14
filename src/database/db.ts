@@ -1,13 +1,17 @@
-import * as SQLite from 'expo-sqlite';
-
-let db: SQLite.SQLiteDatabase | null = null;
+import { Platform } from 'react-native';
+import type * as SQLite from 'expo-sqlite';
 
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
-  if (!db) {
-    db = await SQLite.openDatabaseAsync('aildata.db');
-    // Enable WAL mode and foreign keys for security and performance
-    await db.execAsync('PRAGMA journal_mode = WAL;');
-    await db.execAsync('PRAGMA foreign_keys = ON;');
+  if (Platform.OS === 'web') {
+    return {
+      execAsync: async () => {},
+      runAsync: async () => {},
+      getAllAsync: async () => []
+    } as unknown as SQLite.SQLiteDatabase;
   }
+  const SQLiteModule = await import('expo-sqlite');
+  const db = await SQLiteModule.openDatabaseAsync('aildata.db');
+  await db.execAsync('PRAGMA journal_mode = WAL;');
+  await db.execAsync('PRAGMA foreign_keys = ON;');
   return db;
 }

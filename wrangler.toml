@@ -5,4 +5,4 @@ compatibility_date = "2026-11-07"
 [[d1_databases]]
 binding = "DB"
 database_name = "aildata-db"
-database_id = "your-d1-database-id"
+database_id = "8c1a3f6b-05e0-4a46-b331-183fdd3640be"
