@@ -1,10 +1,57 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Platform, ScrollView } from 'react-native';
 import * as XLSX from 'xlsx';
 import { insertBatchRecords } from '../services/dataService';
 
 interface ImportFileViewProps {
   onImportComplete: () => void;
+}
+
+const HEADER_TOKENS = ['name', 'jacket', 'country', 'coo', 'agency', 'book', 'charge', 'cell', 'race', 'sex', 'case', 'date', 'ice', 'penpal'];
+
+function detectHeaderRow(worksheet: XLSX.WorkSheet): { headerRowIndex: number; headers: string[] } {
+  const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
+  const maxScan = Math.min(5, rows.length);
+  
+  let bestRowIndex = 0;
+  let maxMatches = 0;
+  let bestHeaders: string[] = [];
+
+  for (let r = 0; r < maxScan; r++) {
+    const row = rows[r];
+    if (!Array.isArray(row)) continue;
+    const stringCells = row.map(cell => (cell ? String(cell).trim() : ''));
+    let matches = 0;
+    stringCells.forEach(cell => {
+      const lower = cell.toLowerCase();
+      if (HEADER_TOKENS.some(token => lower.includes(token))) {
+        matches++;
+      }
+    });
+
+    if (matches > maxMatches) {
+      maxMatches = matches;
+      bestRowIndex = r;
+      bestHeaders = stringCells.filter(Boolean);
+    }
+  }
+
+  if (maxMatches === 0 && rows.length > 0) {
+    bestHeaders = (rows[0] || []).map(cell => (cell ? String(cell).trim() : '')).filter(Boolean);
+  }
+
+  return { headerRowIndex: bestRowIndex, headers: bestHeaders };
+}
+
+interface SheetPreview {
+  sheetName: string;
+  headerRowIndex: number;
+  headers: string[];
+  matchedCoreColumns: string[];
+  totalRawRows: number;
+  validRowsCount: number;
+  skippedRowsCount: number;
+  sampleRows: Record<string, any>[];
 }
 
 export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
@@ -42,6 +89,54 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
     }
   };
 
+  // Compute pre-import preview for selected sheets
+  const previews: SheetPreview[] = useMemo(() => {
+    if (!fileData) return [];
+
+    return fileData.workbook.SheetNames.filter(name => sheetSelections[name]).map(sheetName => {
+      const worksheet = fileData.workbook.Sheets[sheetName];
+      const { headerRowIndex, headers } = detectHeaderRow(worksheet);
+
+      const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, {
+        raw: false,
+        dateNF: 'yyyy-mm-dd',
+        range: headerRowIndex
+      });
+
+      const validRows: Record<string, any>[] = [];
+      let skippedCount = 0;
+
+      for (const row of jsonRows) {
+        const hasValues = Object.values(row).some(val => val !== null && val !== undefined && String(val).trim() !== '');
+        const hasName = Object.entries(row).some(([k, v]) => 
+          k.toLowerCase().includes('name') && v !== null && String(v).trim() !== ''
+        );
+
+        if (hasValues && hasName) {
+          validRows.push(row);
+        } else {
+          skippedCount++;
+        }
+      }
+
+      const matchedCore = headers.filter(h => {
+        const l = h.toLowerCase();
+        return HEADER_TOKENS.some(token => l.includes(token));
+      });
+
+      return {
+        sheetName,
+        headerRowIndex,
+        headers,
+        matchedCoreColumns: matchedCore,
+        totalRawRows: jsonRows.length,
+        validRowsCount: validRows.length,
+        skippedRowsCount: skippedCount,
+        sampleRows: validRows.slice(0, 3)
+      };
+    });
+  }, [fileData, sheetSelections]);
+
   const handleConfirmImport = async () => {
     if (!fileData) return;
 
@@ -54,7 +149,13 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
         if (!isSelected) continue;
 
         const worksheet = fileData.workbook.Sheets[sheetName];
-        const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, { raw: false, dateNF: 'yyyy-mm-dd', range: 1 });
+        const { headerRowIndex } = detectHeaderRow(worksheet);
+
+        const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, {
+          raw: false,
+          dateNF: 'yyyy-mm-dd',
+          range: headerRowIndex
+        });
 
         const validRows: Record<string, any>[] = [];
         for (const row of jsonRows) {
@@ -86,11 +187,11 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
   };
 
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.card}>
-        <Text style={styles.title}>📂 High-Performance Spreadsheet Import</Text>
+        <Text style={styles.title}>📂 High-Performance Spreadsheet Ingestion</Text>
         <Text style={styles.description}>
-          Upload any CSV, ODS, or XLSX file. Rows are validated and bulk batch-inserted instantly to prevent page freezing.
+          Upload any CSV, ODS, or XLSX spreadsheet. The scanner detects header rows dynamically and validates relational entities before batch ingestion.
         </Text>
 
         {!fileData ? (
@@ -105,13 +206,15 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
                 />
               </View>
             ) : (
-              <Text style={styles.nativeNotice}>File upload supported on web preview.</Text>
+              <Text style={styles.nativeNotice}>Web file picker active. On native, file system permissions apply.</Text>
             )}
           </View>
         ) : (
           <View style={styles.selectionContainer}>
-            <Text style={styles.sectionHeader}>Select Sheets to Import from: {fileData.fileName}</Text>
-            <ScrollView style={styles.sheetList}>
+            <Text style={styles.sectionHeader}>File: {fileData.fileName}</Text>
+            <Text style={styles.subText}>Select sheets to inspect and import:</Text>
+            
+            <View style={styles.sheetList}>
               {fileData.workbook.SheetNames.map(sheetName => (
                 <TouchableOpacity
                   key={sheetName}
@@ -122,14 +225,57 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
                   <Text style={styles.sheetName} numberOfLines={1}>{sheetName}</Text>
                 </TouchableOpacity>
               ))}
-            </ScrollView>
+            </View>
+
+            {/* Pre-Import Previews */}
+            {previews.length > 0 && (
+              <View style={styles.previewContainer}>
+                <Text style={styles.previewHeading}>📊 Pre-Import Validation & Column Mapping Preview</Text>
+                {previews.map(preview => (
+                  <View key={preview.sheetName} style={styles.previewCard}>
+                    <View style={styles.previewHeader}>
+                      <Text style={styles.previewSheetName}>Sheet: {preview.sheetName}</Text>
+                      <Text style={styles.headerRowBadge}>Header Row: {preview.headerRowIndex + 1}</Text>
+                    </View>
+
+                    <View style={styles.statPills}>
+                      <View style={[styles.statPill, { backgroundColor: '#dcfce7' }]}>
+                        <Text style={[styles.statPillText, { color: '#166534' }]}>
+                          ✓ {preview.validRowsCount} Valid Rows
+                        </Text>
+                      </View>
+                      <View style={[styles.statPill, { backgroundColor: '#f1f5f9' }]}>
+                        <Text style={[styles.statPillText, { color: '#475569' }]}>
+                          ⊘ {preview.skippedRowsCount} Blank/Skipped
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.matchedHeading}>Matched Relational Columns:</Text>
+                    <View style={styles.matchedColumns}>
+                      {preview.matchedCoreColumns.map(col => (
+                        <View key={col} style={styles.columnTag}>
+                          <Text style={styles.columnTagText}>{col}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
 
             <View style={styles.buttonRow}>
               <TouchableOpacity style={styles.cancelButton} onPress={() => setFileData(null)}>
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.importButton} onPress={handleConfirmImport}>
-                <Text style={styles.importButtonText}>Batch Import Selected Sheets</Text>
+              <TouchableOpacity 
+                style={[styles.importButton, previews.length === 0 && styles.disabledButton]} 
+                disabled={previews.length === 0}
+                onPress={handleConfirmImport}
+              >
+                <Text style={styles.importButtonText}>
+                  Batch Ingest Selected ({previews.reduce((acc, p) => acc + p.validRowsCount, 0)} Rows)
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -148,7 +294,7 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
           </View>
         )}
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -156,9 +302,8 @@ const styles = StyleSheet.create({
   container: {
     padding: 24,
     backgroundColor: '#f8fafc',
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
+    flexGrow: 1,
   },
   card: {
     backgroundColor: '#ffffff',
@@ -166,7 +311,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#e2e8f0',
-    maxWidth: 650,
+    maxWidth: 720,
     width: '100%',
     shadowColor: '#000',
     shadowOpacity: 0.05,
@@ -177,7 +322,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
     color: '#0f172a',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   description: {
     fontSize: 14,
@@ -204,13 +349,16 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   sectionHeader: {
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
     color: '#1e293b',
+  },
+  subText: {
+    fontSize: 13,
+    color: '#64748b',
     marginBottom: 10,
   },
   sheetList: {
-    maxHeight: 200,
     borderWidth: 1,
     borderColor: '#e2e8f0',
     borderRadius: 8,
@@ -225,18 +373,92 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e2e8f0',
   },
   checkbox: {
-    fontSize: 18,
-    marginRight: 12,
+    fontSize: 16,
+    marginRight: 10,
   },
   sheetName: {
     fontSize: 14,
     color: '#334155',
     flex: 1,
   },
+  previewContainer: {
+    marginVertical: 14,
+  },
+  previewHeading: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 8,
+  },
+  previewCard: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 10,
+  },
+  previewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  previewSheetName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  headerRowBadge: {
+    fontSize: 11,
+    color: '#2563eb',
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    fontWeight: '600',
+  },
+  statPills: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  statPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  matchedHeading: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 6,
+  },
+  matchedColumns: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  columnTag: {
+    backgroundColor: '#e0e7ff',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  columnTagText: {
+    fontSize: 11,
+    color: '#3730a3',
+    fontWeight: '500',
+  },
   buttonRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 12,
+    marginTop: 10,
   },
   cancelButton: {
     paddingVertical: 12,
@@ -254,6 +476,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 20,
     borderRadius: 8,
+  },
+  disabledButton: {
+    opacity: 0.5,
   },
   importButtonText: {
     color: '#ffffff',

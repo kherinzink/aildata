@@ -70,11 +70,11 @@ Move header normalization and relational splitting into the Worker's `POST /api/
 
 ### C. Ephemeral Retention & Automated Purge Policy (Cloudflare Cron Trigger)
 
-To support automated 30/60-day TTL hygiene without losing historical metrics:
+To support automated 1-year TTL hygiene without losing historical metrics:
 
 * Configure a daily Cron Trigger in `wrangler.toml` (`crons = ["0 3 * * *"]`).
 * Before purging expired records, write a daily summary row into `aggregate_rollups` so `DashboardView` retains historical trend counts permanently.
-* Delete expired `detentions` (and cascade-delete orphaned `charges`, `legal_proceedings`, `correspondence`, and `detainees` with no remaining detentions) where `departure_date` is older than 30 days (for uncharged records) or 60 days (general retention window), plus matching `dynamic_records` rows.
+* Delete expired `detentions` (and cascade-delete orphaned `charges`, `legal_proceedings`, `correspondence`, and `detainees` with no remaining detentions) where `departure_date` is older than 1 year (365 days), plus matching `dynamic_records` rows older than 1 year.
 
 ---
 
@@ -93,7 +93,7 @@ To support automated 30/60-day TTL hygiene without losing historical metrics:
 | `POST /api/records/batch` | **`analyst`** | Validates rows, writes raw `dynamic_records`, and atomically normalizes into relational tables |
 | `DELETE /api/records/category/:cat` | **`admin`** | Deletes a specific imported sheet category |
 | `DELETE /api/records` | **`admin`** | Full database reset (clears `dynamic_records` and cascades `detainees`) |
-| `POST /api/maintenance/purge` | **`admin`** | Manually triggers the 30/60-day TTL rollup + purge job on demand |
+| `POST /api/maintenance/purge` | **`admin`** | Manually triggers the 1-year TTL rollup + purge job on demand |
 
 ---
 
@@ -134,7 +134,7 @@ To support automated 30/60-day TTL hygiene without losing historical metrics:
 * **Live Relational Entity Counts:** Turn the static `['detainees', 'detentions', ...]` badges into live record counts from `/api/stats`.
 * **Admin-Only Sections (`role === 'admin'`):**
 * **User Provisioning Card:** Email input, temporary password input, role pill selector (`viewer` | `analyst` | `admin`), and submit button wired to `registerUser()`.
-* **Retention & Maintenance Card:** Gate category deletion badges and `Clear Database Records` strictly behind `isAdmin`, and add a **Run 30/60-Day Retention Purge** button.
+* **Retention & Maintenance Card:** Gate category deletion badges and `Clear Database Records` strictly behind `isAdmin`, and add a **Run 1-Year Retention Purge** button.
 
 
 
@@ -159,7 +159,7 @@ To support automated 30/60-day TTL hygiene without losing historical metrics:
 
 
 3. **Phase 3 — Master-Detail Drilldown & Automated Retention:**
-* Connect `DashboardView` to `/api/stats` and `SpreadsheetView` to the Detainee Detail modal; deploy the Cloudflare Worker Cron Trigger for daily `aggregate_rollups` snapshots and 30/60-day ephemeral purges.
+* Connect `DashboardView` to `/api/stats` and `SpreadsheetView` to the Detainee Detail modal; deploy the Cloudflare Worker Cron Trigger for daily `aggregate_rollups` snapshots and 1-year ephemeral purges.
 
 
 ---
@@ -187,7 +187,7 @@ Here is the exact file-level inventory across both the React Native (Expo) front
 * **`src/components/DashboardView.tsx`**
 * Replace the hardcoded `new Date('2026-11-02')` cutoff with `new Date()`.
 * Consume server-side `/api/stats` aggregations and live table row counts for `detainees`, `detentions`, `charges`, `legal_proceedings`, and `correspondence` (falling back to client-side `records` calculation if offline/cached).
-* Gate category deletion badges (`deleteCategoryRecords`), `Clear Database Records`, and the new **Run 30/60-Day Retention Purge** trigger behind `getAuthUser()?.role === 'admin'`.
+* Gate category deletion badges (`deleteCategoryRecords`), `Clear Database Records`, and the new **Run 1-Year Retention Purge** trigger behind `getAuthUser()?.role === 'admin'`.
 * Add the **Admin User Provisioning** card (`email`, `password`, and `['viewer', 'analyst', 'admin']` selector calling `registerUser()`), gated by `isAdmin`.
 
 
@@ -215,7 +215,7 @@ Here is the exact file-level inventory across both the React Native (Expo) front
 * **`worker/src/index.ts`** *(or your Worker entry file)*
 * Update `POST /api/records/batch` to map incoming spreadsheet keys to relational columns, upsert `detainees` (keyed on `jacket_number` / `ice_case_number` / normalized `name + country`) and `detentions`, and split/insert child records into `charges`, `legal_proceedings`, and `correspondence` inside a single `env.DB.batch([...])` transaction alongside the raw `dynamic_records` insert.
 * Add `GET /api/detainees`, `GET /api/detainees/:id`, `GET /api/stats`, and `POST /api/maintenance/purge` routes with RBAC middleware (`viewer`, `analyst`, `admin`).
-* Export a `scheduled(event, env, ctx)` handler to snapshot daily metrics into `aggregate_rollups` and purge expired 30-day uncharged / 60-day general detention records.
+* Export a `scheduled(event, env, ctx)` handler to snapshot daily metrics into `aggregate_rollups` and purge expired detention records older than 1 year (365 days).
 
 
 * **`wrangler.toml`** *(or `wrangler.jsonc`)*
@@ -237,7 +237,7 @@ Here is the exact file-level inventory across both the React Native (Expo) front
 
 
 * **`worker/src/retention.ts`** *(Backend Helper)*
-* Shared logic called by both the daily `scheduled()` Cron Trigger and `POST /api/maintenance/purge` to compute `aggregate_rollups` and execute cascading 30/60-day TTL deletes.
+* Shared logic called by both the daily `scheduled()` Cron Trigger and `POST /api/maintenance/purge` to compute `aggregate_rollups` and execute cascading 1-year TTL deletes.
 
 
 * **`src/components/DetaineeDetailModal.tsx`** *(Frontend Modal/Drawer)*

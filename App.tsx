@@ -1,19 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput, SafeAreaView } from 'react-native';
-import { initializeDatabase, getTableNames, getRecords, insertRecord, getStorageMode, getAuthToken, getAuthUser, logoutUser, DynamicRecord } from './src/services/dataService';
+import { initializeDatabase, getTableNames, getRecords, insertRecord, getStorageMode, getAuthToken, getAuthUser, logoutUser, setUnauthorizedCallback, DynamicRecord } from './src/services/dataService';
 import { SpreadsheetView } from './src/views/SpreadsheetView';
 import { DashboardView } from './src/views/DashboardView';
 import { ImportFileView } from './src/views/ImportFileView';
 import { AuthView } from './src/views/AuthView';
 
-const API_CONFIGURED = !!process.env.EXPO_PUBLIC_API_BASE_URL;
-
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!API_CONFIGURED || !!getAuthToken());
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!getAuthToken());
   const [currentUser, setCurrentUser] = useState<{ email?: string | null; role?: string | null } | null>(getAuthUser());
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'spreadsheet' | 'insert' | 'import'>('spreadsheet');
+  useEffect(() => {
+    setUnauthorizedCallback(() => {
+      setIsAuthenticated(false);
+      setCurrentUser(null);
+    });
+  }, []);
+
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'spreadsheet' | 'insert' | 'import'>('dashboard');
   const [dbStatus, setDbStatus] = useState<string>('Initializing...');
   const [storageMode, setStorageMode] = useState<string>('');
   const [tables, setTables] = useState<string[]>([]);
@@ -79,7 +84,7 @@ export default function App() {
     }
   };
 
-  if (API_CONFIGURED && !isAuthenticated) {
+  if (!isAuthenticated) {
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar style="dark" />
@@ -88,8 +93,17 @@ export default function App() {
     );
   }
 
-  const role = currentUser?.role || 'admin';
+  const role = (currentUser?.role || 'viewer').toLowerCase();
+  const isAdmin = role === 'admin';
   const canModify = role === 'admin' || role === 'analyst';
+
+  const getRoleBadgeStyle = (userRole: string) => {
+    if (userRole === 'admin') return { bg: '#fef2f2', border: '#fca5a5', text: '#b91c1c' };
+    if (userRole === 'analyst') return { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8' };
+    return { bg: '#f0fdf4', border: '#bbf7d0', text: '#15803d' };
+  };
+
+  const roleStyle = getRoleBadgeStyle(role);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -99,39 +113,39 @@ export default function App() {
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Aildata Workspace</Text>
-          <Text style={styles.subtitle}>Secure Database & Spreadsheet Framework</Text>
+          <Text style={styles.subtitle}>Secure Relational Database & Ingestion Framework</Text>
         </View>
         <View style={styles.headerRight}>
           {currentUser?.email && (
-            <View style={styles.userBadge}>
-              <Text style={styles.userText}>{currentUser.email} ({role.toUpperCase()})</Text>
+            <View style={[styles.userBadge, { backgroundColor: roleStyle.bg, borderColor: roleStyle.border }]}>
+              <Text style={[styles.userText, { color: roleStyle.text }]}>
+                {currentUser.email} • {role.toUpperCase()}
+              </Text>
             </View>
           )}
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{dbStatus} | {storageMode}</Text>
           </View>
-          {API_CONFIGURED && (
-            <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-              <Text style={styles.logoutText}>Sign Out</Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+            <Text style={styles.logoutText}>Sign Out</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
       {/* Navigation Tabs */}
       <View style={styles.tabBar}>
         <TouchableOpacity 
-          style={[styles.tab, activeTab === 'spreadsheet' && styles.activeTab]} 
-          onPress={() => setActiveTab('spreadsheet')}
-        >
-          <Text style={[styles.tabText, activeTab === 'spreadsheet' && styles.activeTabText]}>📊 Spreadsheet Grid</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity 
           style={[styles.tab, activeTab === 'dashboard' && styles.activeTab]} 
           onPress={() => setActiveTab('dashboard')}
         >
           <Text style={[styles.tabText, activeTab === 'dashboard' && styles.activeTabText]}>📈 Dashboard</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[styles.tab, activeTab === 'spreadsheet' && styles.activeTab]} 
+          onPress={() => setActiveTab('spreadsheet')}
+        >
+          <Text style={[styles.tabText, activeTab === 'spreadsheet' && styles.activeTabText]}>📊 Spreadsheet Grid</Text>
         </TouchableOpacity>
 
         {canModify && (
@@ -155,8 +169,16 @@ export default function App() {
 
       {/* Active View Content */}
       <View style={styles.contentContainer}>
+        {activeTab === 'dashboard' && (
+          <DashboardView 
+            records={records} 
+            storageMode={storageMode} 
+            tables={tables} 
+            currentUser={currentUser} 
+            onDataChanged={loadData} 
+          />
+        )}
         {activeTab === 'spreadsheet' && <SpreadsheetView records={records} />}
-        {activeTab === 'dashboard' && <DashboardView records={records} storageMode={storageMode} tables={tables} onDataChanged={loadData} />}
         {activeTab === 'import' && canModify && <ImportFileView onImportComplete={loadData} />}
         {activeTab === 'insert' && canModify && (
           <ScrollView contentContainerStyle={styles.insertContainer}>
@@ -216,6 +238,7 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
   title: {
     fontSize: 20,
@@ -228,25 +251,20 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   userBadge: {
-    backgroundColor: '#eff6ff',
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 16,
-    marginRight: 8,
     borderWidth: 1,
-    borderColor: '#bfdbfe',
   },
   userText: {
-    color: '#1d4ed8',
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   badge: {
     backgroundColor: '#dcfce7',
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 16,
-    marginRight: 8,
   },
   badgeText: {
     color: '#166534',

@@ -1,15 +1,52 @@
-import React, { useMemo } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity } from 'react-native';
-import { DynamicRecord, clearDatabase, deleteCategoryRecords } from '../services/dataService';
+import React, { useMemo, useState, useEffect } from 'react';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
+import { DynamicRecord, clearDatabase, deleteCategoryRecords, registerUser, inviteUser, getDashboardStats, runRetentionPurge, DashboardStats } from '../services/dataService';
 
 interface DashboardViewProps {
   records: DynamicRecord[];
   storageMode: string;
   tables: string[];
+  currentUser?: { email?: string | null; role?: string | null } | null;
   onDataChanged: () => void;
 }
 
-export function DashboardView({ records, storageMode, tables, onDataChanged }: DashboardViewProps) {
+export function DashboardView({ records, storageMode, tables, currentUser, onDataChanged }: DashboardViewProps) {
+  const isAdmin = (currentUser?.role || '').toLowerCase() === 'admin';
+
+  // Server Stats State
+  const [serverStats, setServerStats] = useState<DashboardStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+
+  // Admin User Invitation State
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminRole, setAdminRole] = useState<'viewer' | 'analyst' | 'admin'>('analyst');
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminMessage, setAdminMessage] = useState<string | null>(null);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Admin Retention Purge State
+  const [purgeLoading, setPurgeLoading] = useState(false);
+  const [purgeResult, setPurgeResult] = useState<string | null>(null);
+
+  // Fetch Server-side /api/stats
+  const loadStats = async () => {
+    try {
+      setStatsLoading(true);
+      const data = await getDashboardStats();
+      setServerStats(data);
+    } catch {
+      // Fallback gracefully to client-side record calculations if offline or unauthenticated
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadStats();
+  }, [records]);
+
   // Extract unique categories / imported sheets
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -17,8 +54,8 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
     return Array.from(cats);
   }, [records]);
 
-  // Compute interesting aggregations & Custody Status (Current vs Released) with robust column matching
-  const analytics = useMemo(() => {
+  // Fallback Client Calculations if Server Stats are unavailable
+  const fallbackAnalytics = useMemo(() => {
     const countries: { [key: string]: number } = {};
     const agencies: { [key: string]: number } = {};
     const sexes: { [key: string]: number } = {};
@@ -26,31 +63,27 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
     let currentCount = 0;
     let releasedCount = 0;
     let currentWithPenpalCount = 0;
-    const today = new Date('2026-11-02'); // Current session date
+    const today = new Date();
 
     records.forEach(r => {
       try {
         const data = JSON.parse(r.dataJson);
         
-        // Country
         const country = data['Country'] || data['COO'] || 'Unknown';
         if (country && String(country).trim()) {
           countries[String(country).trim()] = (countries[String(country).trim()] || 0) + 1;
         }
 
-        // Delivering Agency
         const agency = data['Delivering Agency'] || 'Unknown';
         if (agency && String(agency).trim()) {
           agencies[String(agency).trim()] = (agencies[String(agency).trim()] || 0) + 1;
         }
 
-        // Sex
         const sex = data['Sex'] || 'Unknown';
         if (sex && String(sex).trim()) {
           sexes[String(sex).trim()] = (sexes[String(sex).trim()] || 0) + 1;
         }
 
-        // Robust Departure Date Detection (search keys case-insensitively for departure/release)
         let depDateStr = '';
         for (const [k, v] of Object.entries(data)) {
           const lKey = k.toLowerCase();
@@ -65,7 +98,6 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
           isCurrent = true;
           currentCount++;
         } else {
-          // Parse date
           const depDate = new Date(depDateStr);
           if (isNaN(depDate.getTime())) {
             isCurrent = true;
@@ -78,7 +110,6 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
           }
         }
 
-        // Check if has penpal
         let hasPenpal = false;
         for (const [k, v] of Object.entries(data)) {
           if (k.toLowerCase().includes('penpal') && v !== null && v !== undefined && String(v).trim() !== '') {
@@ -95,16 +126,30 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
       }
     });
 
-    const topCountries = Object.entries(countries).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    const topAgencies = Object.entries(agencies).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    const sexDistribution = Object.entries(sexes).sort((a, b) => b[1] - a[1]);
+    const topCountries = Object.entries(countries).sort((a, b) => b[1] - a[1]).slice(0, 5) as [string, number][];
+    const topAgencies = Object.entries(agencies).sort((a, b) => b[1] - a[1]).slice(0, 5) as [string, number][];
+    const sexDistribution = Object.entries(sexes).sort((a, b) => b[1] - a[1]) as [string, number][];
     const penpalPercentage = currentCount > 0 ? ((currentWithPenpalCount / currentCount) * 100).toFixed(1) : '0.0';
 
     return { topCountries, topAgencies, sexDistribution, currentCount, releasedCount, penpalPercentage };
   }, [records]);
 
+  // Unified Analytics Values (Server preferenced over client fallback)
+  const activeCount = serverStats ? serverStats.currentCount : fallbackAnalytics.currentCount;
+  const releasedCount = serverStats ? serverStats.releasedCount : fallbackAnalytics.releasedCount;
+  const penpalPercent = serverStats 
+    ? (serverStats.currentCount > 0 ? ((serverStats.withPenpalCount / serverStats.currentCount) * 100).toFixed(1) : '0.0')
+    : fallbackAnalytics.penpalPercentage;
+  const topCountries = serverStats ? serverStats.topCountries : fallbackAnalytics.topCountries;
+  const topAgencies = serverStats ? serverStats.topAgencies : fallbackAnalytics.topAgencies;
+  const sexDistribution = serverStats ? serverStats.sexDistribution : fallbackAnalytics.sexDistribution;
+
   const handleClearDatabase = async () => {
-    const confirmClear = window.confirm 
+    if (!isAdmin) {
+      alert('Only administrators can clear database records.');
+      return;
+    }
+    const confirmClear = typeof window !== 'undefined' && window.confirm 
       ? window.confirm('Are you sure you want to clear all database records?') 
       : true;
 
@@ -112,6 +157,7 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
       try {
         await clearDatabase();
         await onDataChanged();
+        await loadStats();
         alert('Database cleared successfully.');
       } catch (e: any) {
         alert(`Failed to clear database: ${e.message}`);
@@ -120,7 +166,8 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
   };
 
   const handleDeleteCategory = async (cat: string) => {
-    const confirmDelete = window.confirm 
+    if (!isAdmin) return;
+    const confirmDelete = typeof window !== 'undefined' && window.confirm 
       ? window.confirm(`Are you sure you want to delete all records for imported sheet "${cat}"?`) 
       : true;
 
@@ -128,6 +175,7 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
       try {
         await deleteCategoryRecords(cat);
         await onDataChanged();
+        await loadStats();
         alert(`Successfully deleted records for "${cat}".`);
       } catch (e: any) {
         alert(`Failed to delete records: ${e.message}`);
@@ -135,27 +183,96 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
     }
   };
 
+  const handleInviteUser = async () => {
+    setAdminMessage(null);
+    setAdminError(null);
+    setInviteLink(null);
+    setCopied(false);
+
+    if (!adminEmail.trim()) {
+      setAdminError('Email address is required to invite a team member.');
+      return;
+    }
+
+    setAdminLoading(true);
+    try {
+      const res = await inviteUser(adminEmail.trim(), adminRole);
+      const origin = typeof window !== 'undefined' && window.location?.origin 
+        ? window.location.origin 
+        : 'https://aildata.khanis.workers.dev';
+      const fullLink = `${origin}/?invite=${res.inviteToken}`;
+      setInviteLink(fullLink);
+      setAdminMessage(`Invitation generated for ${res.email} (${res.role.toUpperCase()}). The link is valid for 7 days.`);
+      setAdminEmail('');
+    } catch (e: any) {
+      setAdminError(e.message || 'Failed to generate invitation link');
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleCopyLink = () => {
+    if (!inviteLink) return;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(inviteLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    } else {
+      alert(`Copy this activation link:\n${inviteLink}`);
+    }
+  };
+
+  const handleRunPurge = async () => {
+    if (!isAdmin) return;
+    const confirmPurge = typeof window !== 'undefined' && window.confirm
+      ? window.confirm('Execute 1-year retention purge and snapshot aggregate metrics into aggregate_rollups?')
+      : true;
+
+    if (!confirmPurge) return;
+
+    setPurgeLoading(true);
+    setPurgeResult(null);
+    try {
+      const res = await runRetentionPurge();
+      const info = res.result;
+      setPurgeResult(
+        `Purge Completed: ${info.purgedDetentionsCount} detentions, ${info.purgedDetaineesCount} orphaned detainees, and ${info.purgedDynamicRecordsCount} raw staging rows purged (>1 year). Snapshot date: ${info.snapshotDate}`
+      );
+      await onDataChanged();
+      await loadStats();
+    } catch (e: any) {
+      alert(`Purge failed: ${e.message}`);
+    } finally {
+      setPurgeLoading(false);
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>System Overview & Custody Analytics</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>System Overview & Custody Analytics</Text>
+        {statsLoading && <ActivityIndicator size="small" color="#2563eb" />}
+      </View>
       
       {/* Top Metric Cards */}
       <View style={styles.grid}>
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Total Records</Text>
-          <Text style={styles.cardValue}>{records.length.toLocaleString()}</Text>
+          <Text style={styles.cardTitle}>Total Records Ingested</Text>
+          <Text style={styles.cardValue}>
+            {serverStats ? serverStats.totalDynamic.toLocaleString() : records.length.toLocaleString()}
+          </Text>
         </View>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🟢 Current In Custody</Text>
-          <Text style={[styles.cardValue, { color: '#166534' }]}>{analytics.currentCount.toLocaleString()}</Text>
+          <Text style={[styles.cardValue, { color: '#166534' }]}>{activeCount.toLocaleString()}</Text>
         </View>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🔴 Released / Transferred</Text>
-          <Text style={[styles.cardValue, { color: '#991b1b' }]}>{analytics.releasedCount.toLocaleString()}</Text>
+          <Text style={[styles.cardValue, { color: '#991b1b' }]}>{releasedCount.toLocaleString()}</Text>
         </View>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>✉️ Current with Penpals</Text>
-          <Text style={[styles.cardValue, { color: '#2563eb' }]}>{analytics.penpalPercentage}%</Text>
+          <Text style={[styles.cardValue, { color: '#2563eb' }]}>{penpalPercent}%</Text>
         </View>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Storage Engine</Text>
@@ -163,15 +280,47 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
         </View>
       </View>
 
-      {/* Interesting Insights / Column Aggregations */}
+      {/* Relational Entity Live Counts */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>🗄️ Normalized Relational Entities (Live D1 Counts)</Text>
+        <View style={styles.badgeContainer}>
+          <View style={styles.tableBadge}>
+            <Text style={styles.tableBadgeText}>
+              detainees: <Text style={styles.tableBadgeHighlight}>{serverStats?.counts?.detainees ?? '-'}</Text>
+            </Text>
+          </View>
+          <View style={styles.tableBadge}>
+            <Text style={styles.tableBadgeText}>
+              detentions: <Text style={styles.tableBadgeHighlight}>{serverStats?.counts?.detentions ?? '-'}</Text>
+            </Text>
+          </View>
+          <View style={styles.tableBadge}>
+            <Text style={styles.tableBadgeText}>
+              charges: <Text style={styles.tableBadgeHighlight}>{serverStats?.counts?.charges ?? '-'}</Text>
+            </Text>
+          </View>
+          <View style={styles.tableBadge}>
+            <Text style={styles.tableBadgeText}>
+              legal_proceedings: <Text style={styles.tableBadgeHighlight}>{serverStats?.counts?.legal_proceedings ?? '-'}</Text>
+            </Text>
+          </View>
+          <View style={styles.tableBadge}>
+            <Text style={styles.tableBadgeText}>
+              correspondence: <Text style={styles.tableBadgeHighlight}>{serverStats?.counts?.correspondence ?? '-'}</Text>
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Column Aggregations */}
       <View style={styles.rowGrid}>
         {/* Top Countries */}
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>🌍 Top Countries of Origin (COO)</Text>
-          {analytics.topCountries.length === 0 ? (
+          {topCountries.length === 0 ? (
             <Text style={styles.emptyText}>No country data available.</Text>
           ) : (
-            analytics.topCountries.map(([country, count]) => (
+            topCountries.map(([country, count]) => (
               <View key={country} style={styles.statRow}>
                 <Text style={styles.statLabel}>{country}</Text>
                 <Text style={styles.statCount}>{count}</Text>
@@ -183,10 +332,10 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
         {/* Top Delivering Agencies */}
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>🏛️ Top Delivering Agencies</Text>
-          {analytics.topAgencies.length === 0 ? (
+          {topAgencies.length === 0 ? (
             <Text style={styles.emptyText}>No agency data available.</Text>
           ) : (
-            analytics.topAgencies.map(([agency, count]) => (
+            topAgencies.map(([agency, count]) => (
               <View key={agency} style={styles.statRow}>
                 <Text style={styles.statLabel}>{agency}</Text>
                 <Text style={styles.statCount}>{count}</Text>
@@ -200,10 +349,10 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
       <View style={styles.rowGrid}>
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>👥 Sex Distribution</Text>
-          {analytics.sexDistribution.length === 0 ? (
+          {sexDistribution.length === 0 ? (
             <Text style={styles.emptyText}>No demographic data available.</Text>
           ) : (
-            analytics.sexDistribution.map(([sex, count]) => (
+            sexDistribution.map(([sex, count]) => (
               <View key={sex} style={styles.statRow}>
                 <Text style={styles.statLabel}>{sex === 'M' ? 'Male' : sex === 'F' ? 'Female' : sex}</Text>
                 <Text style={styles.statCount}>{count}</Text>
@@ -213,40 +362,144 @@ export function DashboardView({ records, storageMode, tables, onDataChanged }: D
         </View>
 
         <View style={styles.halfSection}>
-          <Text style={styles.sectionTitle}>📁 Active Sheets & Tables</Text>
-          <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>Click any imported sheet badge below to delete its records:</Text>
+          <Text style={styles.sectionTitle}>📁 Raw Ingested Sheet Categories</Text>
+          {isAdmin ? (
+            <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>
+              Admin controls: click any sheet badge below to delete its records:
+            </Text>
+          ) : (
+            <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>
+              Currently imported sheet categories:
+            </Text>
+          )}
+          
           <View style={styles.badgeContainer}>
-            {categories.map(cat => (
-              <TouchableOpacity 
-                key={cat} 
-                style={[styles.categoryBadge, { backgroundColor: '#fef2f2', borderColor: '#fecaca' }]} 
-                onPress={() => handleDeleteCategory(cat)}
-              >
-                <Text style={[styles.categoryText, { color: '#991b1b' }]}>{cat} ({records.filter(r => r.category === cat).length}) 🗑️</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          <Text style={[styles.sectionTitle, { marginTop: 16 }]}>🗄️ Relational Entities</Text>
-          <View style={styles.badgeContainer}>
-            {['detainees', 'detentions', 'charges', 'legal_proceedings', 'correspondence'].map(t => (
-              <View key={t} style={styles.tableBadge}>
-                <Text style={styles.tableBadgeText}>{t}</Text>
-              </View>
-            ))}
+            {categories.length === 0 ? (
+              <Text style={styles.emptyText}>No imported sheets yet.</Text>
+            ) : (
+              categories.map(cat => (
+                <TouchableOpacity 
+                  key={cat} 
+                  style={[styles.categoryBadge, isAdmin && { backgroundColor: '#fef2f2', borderColor: '#fecaca' }]} 
+                  disabled={!isAdmin}
+                  onPress={() => handleDeleteCategory(cat)}
+                >
+                  <Text style={[styles.categoryText, isAdmin && { color: '#991b1b' }]}>
+                    {cat} ({records.filter(r => r.category === cat).length}) {isAdmin ? '🗑️' : ''}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            )}
           </View>
         </View>
       </View>
 
-      {/* Maintenance */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Database Maintenance</Text>
-        <Text style={styles.sectionDesc}>
-          Need to wipe all imported spreadsheets and start with a clean slate?
-        </Text>
-        <TouchableOpacity style={styles.clearButton} onPress={handleClearDatabase}>
-          <Text style={styles.clearButtonText}>🗑️ Clear Database Records</Text>
-        </TouchableOpacity>
-      </View>
+      {/* Admin User Invitation Card */}
+      {isAdmin && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>👤 Admin: Invite Team Member (One-Click Link)</Text>
+          <Text style={styles.sectionDesc}>
+            Generate a secure activation link with assigned permissions. The invited team member sets their own password.
+          </Text>
+
+          {adminError && <Text style={styles.errorText}>{adminError}</Text>}
+          {adminMessage && <Text style={styles.successText}>{adminMessage}</Text>}
+
+          {inviteLink && (
+            <View style={styles.inviteLinkCard}>
+              <Text style={styles.inviteLinkHeading}>🔗 Activation Link Generated:</Text>
+              <TextInput
+                style={styles.inviteLinkInput}
+                value={inviteLink}
+                editable={false}
+                selectTextOnFocus
+              />
+              <TouchableOpacity style={styles.copyButton} onPress={handleCopyLink}>
+                <Text style={styles.copyButtonText}>{copied ? '✓ Link Copied!' : '📋 Copy Invite Link'}</Text>
+              </TouchableOpacity>
+              <Text style={styles.inviteHelperText}>
+                Send this link to the team member. When opened, they will be prompted to choose their own password to activate their account.
+              </Text>
+            </View>
+          )}
+
+          <View style={styles.provisionForm}>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Team Member Email</Text>
+              <TextInput
+                style={styles.adminInput}
+                placeholder="colleague@aildata.org"
+                placeholderTextColor="#94a3b8"
+                autoCapitalize="none"
+                keyboardType="email-address"
+                value={adminEmail}
+                onChangeText={setAdminEmail}
+              />
+            </View>
+
+            <Text style={styles.inputLabel}>Assigned Role</Text>
+            <View style={styles.rolePickerRow}>
+              {(['viewer', 'analyst', 'admin'] as const).map(r => (
+                <TouchableOpacity
+                  key={r}
+                  style={[styles.rolePill, adminRole === r && styles.activeRolePill]}
+                  onPress={() => setAdminRole(r)}
+                >
+                  <Text style={[styles.rolePillText, adminRole === r && styles.activeRolePillText]}>
+                    {r.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity 
+              style={[styles.provisionButton, adminLoading && styles.disabledButton]} 
+              disabled={adminLoading} 
+              onPress={handleInviteUser}
+            >
+              {adminLoading ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.provisionButtonText}>Generate Invitation Link</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Database Maintenance & Ephemeral Retention (Admin Only) */}
+      {isAdmin && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>⚙️ Data Lifecycle & Database Maintenance</Text>
+          <Text style={styles.sectionDesc}>
+            Manage automatic retention policies, permanent rollup snapshots, and raw staging data.
+          </Text>
+
+          {purgeResult && (
+            <View style={styles.purgeResultBox}>
+              <Text style={styles.purgeResultText}>✓ {purgeResult}</Text>
+            </View>
+          )}
+
+          <View style={styles.actionRow}>
+            <TouchableOpacity 
+              style={[styles.purgeButton, purgeLoading && styles.disabledButton]} 
+              disabled={purgeLoading}
+              onPress={handleRunPurge}
+            >
+              {purgeLoading ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.purgeButtonText}>🧹 Run 1-Year Retention Purge & Rollup</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.clearButton} onPress={handleClearDatabase}>
+              <Text style={styles.clearButtonText}>🗑️ Clear Database Records</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -257,11 +510,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
     flexGrow: 1,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 20,
+  },
   title: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#0f172a',
-    marginBottom: 20,
   },
   grid: {
     flexDirection: 'row',
@@ -377,24 +635,188 @@ const styles = StyleSheet.create({
     backgroundColor: '#f1f5f9',
     borderWidth: 1,
     borderColor: '#cbd5e1',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
   },
   tableBadgeText: {
     color: '#334155',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  tableBadgeHighlight: {
+    color: '#2563eb',
+    fontWeight: '700',
+  },
+  provisionForm: {
+    gap: 12,
+  },
+  formRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  inputGroup: {
+    flex: 1,
+    minWidth: 200,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
+    marginBottom: 6,
+  },
+  adminInput: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#0f172a',
+  },
+  rolePickerRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  rolePill: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+  },
+  activeRolePill: {
+    backgroundColor: '#2563eb',
+    borderColor: '#2563eb',
+  },
+  rolePillText: {
     fontSize: 12,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  activeRolePillText: {
+    color: '#ffffff',
+  },
+  provisionButton: {
+    backgroundColor: '#059669',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  provisionButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  disabledButton: {
+    opacity: 0.6,
+  },
+  errorText: {
+    backgroundColor: '#fee2e2',
+    color: '#991b1b',
+    padding: 10,
+    borderRadius: 6,
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  successText: {
+    backgroundColor: '#dcfce7',
+    color: '#166534',
+    padding: 10,
+    borderRadius: 6,
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  inviteLinkCard: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 16,
+  },
+  inviteLinkHeading: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1d4ed8',
+    marginBottom: 6,
+  },
+  inviteLinkInput: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#93c5fd',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#1e293b',
+    marginBottom: 10,
+  },
+  copyButton: {
+    backgroundColor: '#2563eb',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  copyButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  inviteHelperText: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 16,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  purgeButton: {
+    backgroundColor: '#4338ca',
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  purgeButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  purgeResultBox: {
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 14,
+  },
+  purgeResultText: {
+    color: '#15803d',
+    fontSize: 13,
     fontWeight: '600',
   },
   clearButton: {
     backgroundColor: '#dc2626',
-    padding: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
     borderRadius: 8,
     alignItems: 'center',
   },
   clearButtonText: {
     color: '#ffffff',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
   },
 });
