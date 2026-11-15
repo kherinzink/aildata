@@ -6,7 +6,39 @@ export interface Env {
   JWT_SECRET?: string;
 }
 
-// Web Crypto PBKDF2 password hashing helper
+const DEFAULT_JWT_SECRET = 'aildata_secure_edge_hmac_secret_2026_primary_key';
+
+// Base64URL encoding/decoding utilities (standard Web Crypto compatible)
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function fromBase64Url(str: string): Uint8Array {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  const binary = atob(base64);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// Generate a 16-byte cryptographically secure random salt in hex
+function generateSalt(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Web Crypto PBKDF2 password hashing helper (100,000 iterations)
 async function hashPassword(password: string, salt: string = 'aildata_salt'): Promise<string> {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
@@ -34,13 +66,42 @@ async function hashPassword(password: string, salt: string = 'aildata_salt'): Pr
     .join('');
 }
 
-// Extract and verify session token
-function getAuthenticatedUser(request: Request): { id: string; email: string; role: string } | null {
+// Cryptographic HMAC-SHA256 Token Signing
+async function createSignedToken(payload: Record<string, any>, secret: string = DEFAULT_JWT_SECRET): Promise<string> {
+  const enc = new TextEncoder();
+  const payloadB64 = toBase64Url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payloadB64));
+  const sigB64 = toBase64Url(new Uint8Array(sig));
+  return `${payloadB64}.${sigB64}`;
+}
+
+// Cryptographic HMAC-SHA256 Token Verification
+async function verifySignedToken(token: string, secret: string = DEFAULT_JWT_SECRET): Promise<{ id: string; email: string; role: string } | null> {
   try {
-    const authHeader = request.headers.get('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-    const token = authHeader.split(' ')[1];
-    const payload = JSON.parse(atob(token));
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [payloadB64, sigB64] = parts;
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const sigBytes = fromBase64Url(sigB64);
+    const valid = await crypto.subtle.verify('HMAC', key, sigBytes.buffer as ArrayBuffer, enc.encode(payloadB64));
+    if (!valid) return null;
+
+    const payloadJson = new TextDecoder().decode(fromBase64Url(payloadB64));
+    const payload = JSON.parse(payloadJson);
     if (payload.exp && payload.exp < Date.now()) return null;
     return payload;
   } catch {
@@ -48,15 +109,46 @@ function getAuthenticatedUser(request: Request): { id: string; email: string; ro
   }
 }
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Content-Type': 'application/json',
-  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-  'Pragma': 'no-cache',
-  'Expires': '0'
-};
+// Extract and verify signed session token
+async function getAuthenticatedUser(request: Request, env: Env): Promise<{ id: string; email: string; role: string } | null> {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+    const token = authHeader.split(' ')[1];
+    const secret = env.JWT_SECRET || DEFAULT_JWT_SECRET;
+    return await verifySignedToken(token, secret);
+  } catch {
+    return null;
+  }
+}
+
+// Strict Origin-Restricted CORS
+function getCorsHeaders(request: Request): Record<string, string> {
+  const origin = request.headers.get('Origin');
+  const allowedOrigins = [
+    'https://aildata-web.pages.dev',
+    'http://localhost:8081',
+    'http://localhost:19006',
+    'http://localhost:3000'
+  ];
+
+  let allowOrigin = 'https://aildata-web.pages.dev';
+  if (origin) {
+    if (allowedOrigins.includes(origin) || origin.endsWith('.aildata-web.pages.dev')) {
+      allowOrigin = origin;
+    }
+  }
+
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  };
+}
 
 export default {
   // Cloudflare Workers Scheduled Cron Trigger Handler (Daily at 03:00 UTC)
@@ -68,6 +160,8 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+    const corsHeaders = getCorsHeaders(request);
+    const jwtSecret = env.JWT_SECRET || DEFAULT_JWT_SECRET;
 
     if (method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
@@ -91,7 +185,7 @@ export default {
   <div class="card">
     <div class="badge">Aildata D1 Edge Worker Active</div>
     <h1>Aildata Relational & Ingestion Gateway</h1>
-    <p>Connected to Cloudflare D1 with Role-Based Access Control and automated 1-year retention lifecycle.</p>
+    <p>Connected to Cloudflare D1 with Role-Based Access Control, HMAC token signatures, and automated 1-year retention lifecycle.</p>
   </div>
 </body>
 </html>`;
@@ -106,7 +200,7 @@ export default {
         return new Response(JSON.stringify({ needsSetup: totalUsers === 0 }), { status: 200, headers: corsHeaders });
       }
 
-      // 2. Auth: Login (Public)
+      // 2. Auth: Login (Public with rate limiting & transparent salt upgrade)
       if (path === '/api/auth/login' && method === 'POST') {
         const body: any = await request.json();
         const { email, password } = body;
@@ -115,22 +209,95 @@ export default {
           return new Response(JSON.stringify({ error: 'Email and password are required' }), { status: 400, headers: corsHeaders });
         }
 
-        const passwordHash = await hashPassword(password);
-        const user: any = await env.DB.prepare(
-          'SELECT id, email, role FROM users WHERE email = ? AND password_hash = ?'
-        ).bind(email.toLowerCase().trim(), passwordHash).first();
+        const cleanEmail = email.toLowerCase().trim();
 
-        if (!user) {
+        // Check brute-force lock
+        const lockRes: any = await env.DB.prepare(
+          'SELECT attempt_count, locked_until FROM failed_logins WHERE identifier = ?'
+        ).bind(cleanEmail).first();
+
+        if (lockRes && lockRes.locked_until && new Date(lockRes.locked_until).getTime() > Date.now()) {
+          const remainingMinutes = Math.max(1, Math.ceil((new Date(lockRes.locked_until).getTime() - Date.now()) / 60000));
+          return new Response(JSON.stringify({ 
+            error: `Account temporarily locked due to too many failed attempts. Please try again in ${remainingMinutes} minute(s).` 
+          }), { status: 429, headers: corsHeaders });
+        }
+
+        const user: any = await env.DB.prepare(
+          'SELECT id, email, role, password_hash, salt FROM users WHERE email = ?'
+        ).bind(cleanEmail).first();
+
+        let passwordValid = false;
+        let needsSaltUpgrade = false;
+
+        if (user) {
+          if (user.salt) {
+            // Modern format: unique per-user salt
+            const hash = await hashPassword(password, user.salt);
+            passwordValid = (hash === user.password_hash);
+          } else {
+            // Backward-compatible check against legacy static salt
+            const legacyHash = await hashPassword(password, 'aildata_salt');
+            if (legacyHash === user.password_hash) {
+              passwordValid = true;
+              needsSaltUpgrade = true;
+            }
+          }
+        }
+
+        if (!user || !passwordValid) {
+          // Increment failed attempt counter
+          const attempts = (lockRes?.attempt_count || 0) + 1;
+          if (attempts >= 5) {
+            await env.DB.prepare(`
+              INSERT INTO failed_logins (identifier, attempt_count, locked_until, last_attempt)
+              VALUES (?, ?, datetime('now', '+15 minutes'), CURRENT_TIMESTAMP)
+              ON CONFLICT(identifier) DO UPDATE SET
+                attempt_count = excluded.attempt_count,
+                locked_until = excluded.locked_until,
+                last_attempt = CURRENT_TIMESTAMP;
+            `).bind(cleanEmail, attempts).run();
+          } else {
+            await env.DB.prepare(`
+              INSERT INTO failed_logins (identifier, attempt_count, last_attempt)
+              VALUES (?, ?, CURRENT_TIMESTAMP)
+              ON CONFLICT(identifier) DO UPDATE SET
+                attempt_count = excluded.attempt_count,
+                last_attempt = CURRENT_TIMESTAMP;
+            `).bind(cleanEmail, attempts).run();
+          }
+
           return new Response(JSON.stringify({ error: 'Invalid email or password' }), { status: 401, headers: corsHeaders });
         }
 
-        const token = btoa(JSON.stringify({ id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 }));
-        return new Response(JSON.stringify({ success: true, token, user }), { status: 200, headers: corsHeaders });
+        // On successful authentication, clear any failed login lock
+        if (lockRes) {
+          await env.DB.prepare('DELETE FROM failed_logins WHERE identifier = ?').bind(cleanEmail).run();
+        }
+
+        // Transparently upgrade legacy salt to unique random salt
+        if (needsSaltUpgrade) {
+          const newSalt = generateSalt();
+          const newHash = await hashPassword(password, newSalt);
+          await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?').bind(newHash, newSalt, user.id).run();
+        }
+
+        // Issue cryptographically signed HMAC token
+        const token = await createSignedToken(
+          { id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 },
+          jwtSecret
+        );
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          token, 
+          user: { id: user.id, email: user.email, role: user.role } 
+        }), { status: 200, headers: corsHeaders });
       }
 
       // 3. Auth: Register (Admin only, except when 0 users exist to bootstrap initial admin)
       if (path === '/api/auth/register' && method === 'POST') {
-        const caller = getAuthenticatedUser(request);
+        const caller = await getAuthenticatedUser(request, env);
         
         // Count existing users
         const userCountRes = await env.DB.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>();
@@ -151,19 +318,22 @@ export default {
           return new Response(JSON.stringify({ error: 'Email and password are required' }), { status: 400, headers: corsHeaders });
         }
 
-        // On first use (0 users), enforce root admin role. Subsequent users default to viewer unless admin selects analyst/admin
         const assignedRole = totalUsers === 0 ? 'admin' : ((role === 'admin' || role === 'analyst') ? role : 'viewer');
         const userId = 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-        const passwordHash = await hashPassword(password);
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(password, salt);
 
         try {
           await env.DB.prepare(
-            'INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)'
-          ).bind(userId, email.toLowerCase().trim(), passwordHash, assignedRole).run();
+            'INSERT INTO users (id, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?)'
+          ).bind(userId, email.toLowerCase().trim(), passwordHash, salt, assignedRole).run();
 
           // Only issue an auto-login token if this was first-time setup (0 existing users)
           const token = totalUsers === 0
-            ? btoa(JSON.stringify({ id: userId, email: email.toLowerCase().trim(), role: assignedRole, exp: Date.now() + 86400000 * 7 }))
+            ? await createSignedToken(
+                { id: userId, email: email.toLowerCase().trim(), role: assignedRole, exp: Date.now() + 86400000 * 7 },
+                jwtSecret
+              )
             : undefined;
 
           return new Response(JSON.stringify({ 
@@ -172,7 +342,7 @@ export default {
             user: { id: userId, email: email.toLowerCase().trim(), role: assignedRole } 
           }), { status: 201, headers: corsHeaders });
         } catch (err: any) {
-          return new Response(JSON.stringify({ error: 'Email already registered or invalid data', details: err.message }), { status: 400, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'Email already registered or invalid data' }), { status: 400, headers: corsHeaders });
         }
       }
 
@@ -223,12 +393,17 @@ export default {
           return new Response(JSON.stringify({ error: 'This invitation link has expired' }), { status: 410, headers: corsHeaders });
         }
 
-        const passwordHash = await hashPassword(password);
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(password, salt);
         await env.DB.prepare(
-          'UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?'
-        ).bind(passwordHash, user.id).run();
+          'UPDATE users SET password_hash = ?, salt = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?'
+        ).bind(passwordHash, salt, user.id).run();
 
-        const sessionToken = btoa(JSON.stringify({ id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 }));
+        const sessionToken = await createSignedToken(
+          { id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 },
+          jwtSecret
+        );
+
         return new Response(JSON.stringify({ 
           success: true, 
           token: sessionToken, 
@@ -237,9 +412,9 @@ export default {
       }
 
       // Authentication checkpoint for all protected /api endpoints
-      const authUser = getAuthenticatedUser(request);
+      const authUser = await getAuthenticatedUser(request, env);
       if (!authUser) {
-        return new Response(JSON.stringify({ error: 'Unauthorized: Session missing or expired' }), { status: 401, headers: corsHeaders });
+        return new Response(JSON.stringify({ error: 'Unauthorized: Session missing, invalid, or expired' }), { status: 401, headers: corsHeaders });
       }
 
       // 6. Auth: Invite Team Member (Admin only)
@@ -286,7 +461,7 @@ export default {
         }), { status: 201, headers: corsHeaders });
       }
 
-      // 4. Dynamic Records: Get All or by Category (Viewer+)
+      // 7. Dynamic Records: Get All or by Category (Viewer+)
       if (path === '/api/records' && method === 'GET') {
         const category = url.searchParams.get('category');
         let query = 'SELECT id, category, data_json as dataJson, created_at as createdAt, updated_at as updatedAt FROM dynamic_records';
@@ -304,7 +479,7 @@ export default {
         return new Response(JSON.stringify(results), { status: 200, headers: corsHeaders });
       }
 
-      // 5. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
+      // 8. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
       if (path === '/api/detainees' && method === 'GET') {
         const limitParam = url.searchParams.get('limit');
         const limit = limitParam ? Math.min(parseInt(limitParam, 10), 10000) : 10000;
@@ -338,7 +513,7 @@ export default {
         return new Response(JSON.stringify(results), { status: 200, headers: corsHeaders });
       }
 
-      // 6. Detainees: Master-Detail by ID (Viewer+)
+      // 9. Detainees: Master-Detail by ID (Viewer+)
       if (path.startsWith('/api/detainees/') && method === 'GET') {
         const detaineeId = path.split('/api/detainees/')[1];
         if (!detaineeId) {
@@ -385,7 +560,7 @@ export default {
         }), { status: 200, headers: corsHeaders });
       }
 
-      // 7. Stats: Server-side SQL Aggregations (Viewer+)
+      // 10. Stats: Server-side SQL Aggregations (Viewer+)
       if (path === '/api/stats' && method === 'GET') {
         const today = new Date().toISOString().split('T')[0];
 
@@ -469,7 +644,7 @@ export default {
         }), { status: 200, headers: corsHeaders });
       }
 
-      // 8. Batch Ingest & Relational Normalization (Analyst+)
+      // 11. Batch Ingest & Relational Normalization (Analyst+)
       if (path === '/api/records/batch' && method === 'POST') {
         if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
           return new Response(JSON.stringify({ error: 'Forbidden: Ingestion requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
@@ -592,7 +767,7 @@ export default {
         return new Response(JSON.stringify({ success: true, count: rows.length }), { status: 200, headers: corsHeaders });
       }
 
-      // 9. Records: Clear Database (Admin only)
+      // 12. Records: Clear Database (Admin only)
       if (path === '/api/records' && method === 'DELETE') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to reset database' }), { status: 403, headers: corsHeaders });
@@ -609,7 +784,7 @@ export default {
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
       }
 
-      // 10. Records: Delete By Category (Admin only - fully cascades across normalized tables)
+      // 13. Records: Delete By Category (Admin only - fully cascades across normalized tables)
       if (path.startsWith('/api/records/category/') && method === 'DELETE') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to delete category records' }), { status: 403, headers: corsHeaders });
@@ -649,7 +824,7 @@ export default {
         return new Response(JSON.stringify({ success: true, category }), { status: 200, headers: corsHeaders });
       }
 
-      // 11. Maintenance: Run 1-Year Retention Purge & Rollup (Admin only)
+      // 14. Maintenance: Run 1-Year Retention Purge & Rollup (Admin only)
       if (path === '/api/maintenance/purge' && method === 'POST') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to trigger retention purge' }), { status: 403, headers: corsHeaders });
@@ -661,7 +836,8 @@ export default {
       return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers: corsHeaders });
 
     } catch (err: any) {
-      return new Response(JSON.stringify({ error: 'Internal Server Error', details: err.message }), { status: 500, headers: corsHeaders });
+      console.error('API Error:', err);
+      return new Response(JSON.stringify({ error: 'An unexpected internal error occurred.' }), { status: 500, headers: corsHeaders });
     }
   }
 };
