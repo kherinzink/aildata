@@ -41,7 +41,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const loadNormalizedDetainees = async () => {
     try {
       setNormalizedLoading(true);
-      const data = await getDetainees({ limit: 200 });
+      const data = await getDetainees({ limit: 10000 });
       setNormalizedDetainees(data);
     } catch {
       // Fallback

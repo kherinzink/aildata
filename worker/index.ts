@@ -303,7 +303,8 @@ export default {
 
       // 5. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
       if (path === '/api/detainees' && method === 'GET') {
-        const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
+        const limitParam = url.searchParams.get('limit');
+        const limit = limitParam ? Math.min(parseInt(limitParam, 10), 10000) : 10000;
         const offset = parseInt(url.searchParams.get('offset') || '0', 10);
         const search = url.searchParams.get('search')?.toLowerCase().trim();
 
