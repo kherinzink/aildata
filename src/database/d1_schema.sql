@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     salt TEXT,
     role TEXT NOT NULL DEFAULT 'viewer',
+    status TEXT NOT NULL DEFAULT 'active',
+    last_login DATETIME,
     invite_token TEXT,
     invite_expires_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -128,4 +130,5 @@ CREATE INDEX IF NOT EXISTS idx_correspondence_detainee_id ON correspondence(deta
 CREATE INDEX IF NOT EXISTS idx_detainees_created_at ON detainees(created_at);
 CREATE INDEX IF NOT EXISTS idx_dynamic_records_category ON dynamic_records(category);
 CREATE INDEX IF NOT EXISTS idx_users_invite_token ON users(invite_token);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_failed_logins_identifier ON failed_logins(identifier);

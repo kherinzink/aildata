@@ -141,7 +141,7 @@ function getCorsHeaders(request: Request): Record<string, string> {
 
   return {
     'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
@@ -224,7 +224,7 @@ export default {
         }
 
         const user: any = await env.DB.prepare(
-          'SELECT id, email, role, password_hash, salt FROM users WHERE email = ?'
+          'SELECT id, email, role, status, password_hash, salt FROM users WHERE email = ?'
         ).bind(cleanEmail).first();
 
         let passwordValid = false;
@@ -270,6 +270,13 @@ export default {
           return new Response(JSON.stringify({ error: 'Invalid email or password' }), { status: 401, headers: corsHeaders });
         }
 
+        // Check if account has been deactivated or suspended
+        if (user.status === 'suspended') {
+          return new Response(JSON.stringify({ 
+            error: 'Account has been deactivated. Please contact an administrator.' 
+          }), { status: 403, headers: corsHeaders });
+        }
+
         // On successful authentication, clear any failed login lock
         if (lockRes) {
           await env.DB.prepare('DELETE FROM failed_logins WHERE identifier = ?').bind(cleanEmail).run();
@@ -279,19 +286,21 @@ export default {
         if (needsSaltUpgrade) {
           const newSalt = generateSalt();
           const newHash = await hashPassword(password, newSalt);
-          await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?').bind(newHash, newSalt, user.id).run();
+          await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ?, last_login = CURRENT_TIMESTAMP WHERE id = ?').bind(newHash, newSalt, user.id).run();
+        } else {
+          await env.DB.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').bind(user.id).run();
         }
 
         // Issue cryptographically signed HMAC token
         const token = await createSignedToken(
-          { id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 },
+          { id: user.id, email: user.email, role: user.role, status: user.status || 'active', exp: Date.now() + 86400000 * 7 },
           jwtSecret
         );
 
         return new Response(JSON.stringify({ 
           success: true, 
           token, 
-          user: { id: user.id, email: user.email, role: user.role } 
+          user: { id: user.id, email: user.email, role: user.role, status: user.status || 'active' } 
         }), { status: 200, headers: corsHeaders });
       }
 
@@ -325,13 +334,13 @@ export default {
 
         try {
           await env.DB.prepare(
-            'INSERT INTO users (id, email, password_hash, salt, role) VALUES (?, ?, ?, ?, ?)'
-          ).bind(userId, email.toLowerCase().trim(), passwordHash, salt, assignedRole).run();
+            'INSERT INTO users (id, email, password_hash, salt, role, status) VALUES (?, ?, ?, ?, ?, ?)'
+          ).bind(userId, email.toLowerCase().trim(), passwordHash, salt, assignedRole, 'active').run();
 
           // Only issue an auto-login token if this was first-time setup (0 existing users)
           const token = totalUsers === 0
             ? await createSignedToken(
-                { id: userId, email: email.toLowerCase().trim(), role: assignedRole, exp: Date.now() + 86400000 * 7 },
+                { id: userId, email: email.toLowerCase().trim(), role: assignedRole, status: 'active', exp: Date.now() + 86400000 * 7 },
                 jwtSecret
               )
             : undefined;
@@ -339,7 +348,7 @@ export default {
           return new Response(JSON.stringify({ 
             success: true, 
             token, 
-            user: { id: userId, email: email.toLowerCase().trim(), role: assignedRole } 
+            user: { id: userId, email: email.toLowerCase().trim(), role: assignedRole, status: 'active' } 
           }), { status: 201, headers: corsHeaders });
         } catch (err: any) {
           return new Response(JSON.stringify({ error: 'Email already registered or invalid data' }), { status: 400, headers: corsHeaders });
@@ -396,18 +405,18 @@ export default {
         const salt = generateSalt();
         const passwordHash = await hashPassword(password, salt);
         await env.DB.prepare(
-          'UPDATE users SET password_hash = ?, salt = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?'
-        ).bind(passwordHash, salt, user.id).run();
+          'UPDATE users SET password_hash = ?, salt = ?, invite_token = NULL, invite_expires_at = NULL, status = ?, last_login = CURRENT_TIMESTAMP WHERE id = ?'
+        ).bind(passwordHash, salt, 'active', user.id).run();
 
         const sessionToken = await createSignedToken(
-          { id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 },
+          { id: user.id, email: user.email, role: user.role, status: 'active', exp: Date.now() + 86400000 * 7 },
           jwtSecret
         );
 
         return new Response(JSON.stringify({ 
           success: true, 
           token: sessionToken, 
-          user: { id: user.id, email: user.email, role: user.role } 
+          user: { id: user.id, email: user.email, role: user.role, status: 'active' } 
         }), { status: 200, headers: corsHeaders });
       }
 
@@ -459,6 +468,238 @@ export default {
           role: assignedRole, 
           expiresAt 
         }), { status: 201, headers: corsHeaders });
+      }
+
+      // ======================================================================
+      // Admin User Management Endpoints (Admin role strictly required)
+      // ======================================================================
+
+      // 6a. Admin: List All Users with Status and Lock Metrics
+      if (path === '/api/admin/users' && method === 'GET') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const { results } = await env.DB.prepare(`
+          SELECT 
+            u.id, 
+            u.email, 
+            u.role, 
+            COALESCE(u.status, 'active') as status,
+            u.created_at, 
+            u.last_login,
+            u.invite_expires_at,
+            CASE WHEN u.password_hash = 'PENDING_ACTIVATION' THEN 1 ELSE 0 END as is_pending_invite,
+            COALESCE(fl.attempt_count, 0) as failed_attempts,
+            fl.locked_until,
+            CASE WHEN fl.locked_until IS NOT NULL AND datetime(fl.locked_until) > datetime('now') THEN 1 ELSE 0 END as is_locked
+          FROM users u
+          LEFT JOIN failed_logins fl ON LOWER(fl.identifier) = LOWER(u.email)
+          ORDER BY u.created_at DESC;
+        `).all();
+
+        return new Response(JSON.stringify({ users: results || [] }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6b. Admin: Update User Role (Promote / Demote)
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/role') && (method === 'PATCH' || method === 'PUT')) {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/role', '');
+        const body: any = await request.json();
+        const { role: newRole } = body;
+
+        if (!['admin', 'analyst', 'viewer'].includes(newRole)) {
+          return new Response(JSON.stringify({ error: 'Invalid role specified. Must be admin, analyst, or viewer.' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role, status FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Prevent demoting the last active administrator
+        if (targetUser.role === 'admin' && newRole !== 'admin') {
+          const adminCountRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND COALESCE(status, 'active') = 'active'").first<{ count: number }>();
+          if ((adminCountRes?.count ?? 0) <= 1) {
+            return new Response(JSON.stringify({ error: 'Cannot demote the only remaining active administrator.' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(newRole, userId).run();
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          user: { id: userId, email: targetUser.email, role: newRole } 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6c. Admin: Update User Status (Activate / Suspend)
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/status') && (method === 'PATCH' || method === 'PUT')) {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/status', '');
+        const body: any = await request.json();
+        const { status: newStatus } = body;
+
+        if (!['active', 'suspended'].includes(newStatus)) {
+          return new Response(JSON.stringify({ error: 'Invalid status specified. Must be active or suspended.' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role, status FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Guard: Admin cannot suspend their own account
+        if (targetUser.id === authUser.id && newStatus === 'suspended') {
+          return new Response(JSON.stringify({ error: 'You cannot suspend your own administrator account.' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Guard: Cannot suspend the last active administrator
+        if (targetUser.role === 'admin' && newStatus === 'suspended') {
+          const adminCountRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND COALESCE(status, 'active') = 'active'").first<{ count: number }>();
+          if ((adminCountRes?.count ?? 0) <= 1) {
+            return new Response(JSON.stringify({ error: 'Cannot suspend the only remaining active administrator.' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        await env.DB.prepare('UPDATE users SET status = ? WHERE id = ?').bind(newStatus, userId).run();
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          user: { id: userId, email: targetUser.email, status: newStatus } 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6d. Admin: Unlock Rate-Limited / Brute-Force Locked Account
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/unlock') && method === 'POST') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/unlock', '');
+        const targetUser: any = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        await env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)').bind(targetUser.email).run();
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: `Account for ${targetUser.email} has been unlocked.` 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6e. Admin: Re-issue / Reset Activation or Password Link
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/reset-invite') && method === 'POST') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/reset-invite', '');
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        const inviteToken = 'inv_' + crypto.randomUUID().replace(/-/g, '');
+        const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+
+        await env.DB.batch([
+          env.DB.prepare('UPDATE users SET password_hash = ?, invite_token = ?, invite_expires_at = ? WHERE id = ?')
+            .bind('PENDING_ACTIVATION', inviteToken, expiresAt, userId),
+          env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)')
+            .bind(targetUser.email)
+        ]);
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          inviteToken, 
+          email: targetUser.email, 
+          role: targetUser.role, 
+          expiresAt 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6f. Admin: Direct Manual Password Reset
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/password') && method === 'POST') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/password', '');
+        const body: any = await request.json();
+        const { password } = body;
+
+        if (!password || password.length < 8) {
+          return new Response(JSON.stringify({ error: 'Password must be at least 8 characters' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(password, salt);
+
+        await env.DB.batch([
+          env.DB.prepare('UPDATE users SET password_hash = ?, salt = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?')
+            .bind(passwordHash, salt, userId),
+          env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)')
+            .bind(targetUser.email)
+        ]);
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: `Password successfully updated for ${targetUser.email}.` 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6g. Admin: Permanently Delete User
+      if (path.startsWith('/api/admin/users/') && method === 'DELETE') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1];
+        if (!userId) {
+          return new Response(JSON.stringify({ error: 'User ID is required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Prevent admin from deleting their own account
+        if (targetUser.id === authUser.id) {
+          return new Response(JSON.stringify({ error: 'You cannot delete your own account.' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Prevent deleting the last administrator
+        if (targetUser.role === 'admin') {
+          const adminCountRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'").first<{ count: number }>();
+          if ((adminCountRes?.count ?? 0) <= 1) {
+            return new Response(JSON.stringify({ error: 'Cannot delete the only remaining administrator.' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId),
+          env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)').bind(targetUser.email)
+        ]);
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: `User ${targetUser.email} has been permanently deleted.` 
+        }), { status: 200, headers: corsHeaders });
       }
 
       // 7. Dynamic Records: Get All or by Category (Viewer+)

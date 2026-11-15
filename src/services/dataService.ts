@@ -55,6 +55,20 @@ export interface DashboardStats {
   rollups: any[];
 }
 
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: 'viewer' | 'analyst' | 'admin';
+  status: 'active' | 'suspended';
+  created_at: string;
+  last_login?: string | null;
+  invite_expires_at?: string | null;
+  is_pending_invite: number | boolean;
+  failed_attempts: number;
+  locked_until?: string | null;
+  is_locked: number | boolean;
+}
+
 const API_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://aildata.khanis.workers.dev';
 
 // In-memory fallback for environments without localStorage
@@ -207,6 +221,73 @@ export function logoutUser() {
   storageRemove('aildata_auth_token');
   storageRemove('aildata_user_email');
   storageRemove('aildata_user_role');
+}
+
+export async function getAdminUsers(): Promise<AdminUser[]> {
+  const res = await apiFetch(`${API_URL}/api/admin/users`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch user list');
+  }
+  const data = await res.json();
+  return data.users || [];
+}
+
+export async function updateUserRole(userId: string, role: 'viewer' | 'analyst' | 'admin'): Promise<{ id: string; email: string; role: string }> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/role`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to update user role');
+  return data.user;
+}
+
+export async function updateUserStatus(userId: string, status: 'active' | 'suspended'): Promise<{ id: string; email: string; status: string }> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to update user status');
+  return data.user;
+}
+
+export async function unlockUserAccount(userId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/unlock`, {
+    method: 'POST'
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to unlock user account');
+}
+
+export async function reissueUserInvite(userId: string): Promise<{ inviteToken: string; email: string; role: string; expiresAt: string }> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/reset-invite`, {
+    method: 'POST'
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to re-issue invitation link');
+  return data;
+}
+
+export async function resetUserPasswordDirect(userId: string, password: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to reset user password');
+}
+
+export async function deleteUserAccount(userId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}`, {
+    method: 'DELETE'
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to delete user');
 }
 
 export async function initializeDatabase() {
