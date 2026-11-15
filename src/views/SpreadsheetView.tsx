@@ -51,7 +51,12 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   };
 
   useEffect(() => {
-    loadNormalizedDetainees();
+    if (records.length === 0) {
+      setNormalizedDetainees([]);
+      setSelectedDataset('normalized');
+    } else {
+      loadNormalizedDetainees();
+    }
   }, [records]);
 
   // Extract unique categories for filter pills
@@ -60,6 +65,13 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     records.forEach(r => cats.add(r.category));
     return Array.from(cats);
   }, [records]);
+
+  // Clean up stale category selection if category was deleted
+  useEffect(() => {
+    if (selectedDataset !== 'normalized' && selectedDataset !== 'all' && !categories.includes(selectedDataset)) {
+      setSelectedDataset('normalized');
+    }
+  }, [categories, selectedDataset]);
 
   // Rows when in Normalized mode
   const normalizedRows = useMemo(() => {
@@ -303,6 +315,12 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
         />
         <View style={styles.toolbarRight}>
           {normalizedLoading && <ActivityIndicator size="small" color="#2563eb" style={{ marginRight: 8 }} />}
+          <TouchableOpacity 
+            style={styles.refreshButton} 
+            onPress={() => loadNormalizedDetainees()}
+          >
+            <Text style={styles.refreshButtonText}>🔄 Refresh</Text>
+          </TouchableOpacity>
           <Text style={styles.rowCount}>
             Showing {startCount} - {endCount} of {sortedRows.length} (Total: {activeRows.length})
           </Text>
@@ -477,6 +495,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#0f172a',
     marginRight: 12,
+  },
+  refreshButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+    marginRight: 10,
+  },
+  refreshButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155',
   },
   rowCount: {
     fontSize: 12,

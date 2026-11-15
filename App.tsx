@@ -136,14 +136,20 @@ export default function App() {
       <View style={styles.tabBar}>
         <TouchableOpacity 
           style={[styles.tab, activeTab === 'dashboard' && styles.activeTab]} 
-          onPress={() => setActiveTab('dashboard')}
+          onPress={() => {
+            setActiveTab('dashboard');
+            loadData();
+          }}
         >
           <Text style={[styles.tabText, activeTab === 'dashboard' && styles.activeTabText]}>📈 Dashboard</Text>
         </TouchableOpacity>
 
         <TouchableOpacity 
           style={[styles.tab, activeTab === 'spreadsheet' && styles.activeTab]} 
-          onPress={() => setActiveTab('spreadsheet')}
+          onPress={() => {
+            setActiveTab('spreadsheet');
+            loadData();
+          }}
         >
           <Text style={[styles.tabText, activeTab === 'spreadsheet' && styles.activeTabText]}>📊 Spreadsheet Grid</Text>
         </TouchableOpacity>

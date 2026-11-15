@@ -52,7 +52,10 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Content-Type': 'application/json'
+  'Content-Type': 'application/json',
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
 };
 
 export default {
@@ -523,11 +526,12 @@ export default {
           // Insert detention
           statements.push(
             env.DB.prepare(`
-              INSERT INTO detentions (id, detainee_id, book_date_gcj, departure_date, cell, days_in_gcj, days_prior_facility, came_from, sent_to_note, delivering_agency, duplicate_jacket_returned, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
+              INSERT INTO detentions (id, detainee_id, category, book_date_gcj, departure_date, cell, days_in_gcj, days_prior_facility, came_from, sent_to_note, delivering_agency, duplicate_jacket_returned, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
             `).bind(
               detentionId,
               detaineeId,
+              category,
               dt.book_date_gcj || null,
               dt.departure_date || null,
               dt.cell || null,
@@ -599,12 +603,13 @@ export default {
           env.DB.prepare('DELETE FROM legal_proceedings;'),
           env.DB.prepare('DELETE FROM charges;'),
           env.DB.prepare('DELETE FROM detentions;'),
-          env.DB.prepare('DELETE FROM detainees;')
+          env.DB.prepare('DELETE FROM detainees;'),
+          env.DB.prepare('DELETE FROM aggregate_rollups;')
         ]);
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
       }
 
-      // 10. Records: Delete By Category (Admin only)
+      // 10. Records: Delete By Category (Admin only - fully cascades across normalized tables)
       if (path.startsWith('/api/records/category/') && method === 'DELETE') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to delete category records' }), { status: 403, headers: corsHeaders });
@@ -613,7 +618,34 @@ export default {
         if (!category) {
           return new Response(JSON.stringify({ error: 'Category required' }), { status: 400, headers: corsHeaders });
         }
-        await env.DB.prepare('DELETE FROM dynamic_records WHERE category = ?;').bind(category).run();
+
+        await env.DB.batch([
+          // 1. Delete raw staging records for this category
+          env.DB.prepare('DELETE FROM dynamic_records WHERE category = ?;').bind(category),
+          // 2. Delete charges linked to detentions in this category
+          env.DB.prepare(`
+            DELETE FROM charges 
+            WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
+          `).bind(category),
+          // 3. Delete legal proceedings linked to detentions in this category
+          env.DB.prepare(`
+            DELETE FROM legal_proceedings 
+            WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
+          `).bind(category),
+          // 4. Delete detentions in this category
+          env.DB.prepare('DELETE FROM detentions WHERE category = ?;').bind(category),
+          // 5. Delete correspondence for detainees who no longer have detentions
+          env.DB.prepare(`
+            DELETE FROM correspondence 
+            WHERE detainee_id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
+          `),
+          // 6. Delete orphaned detainees who no longer have detentions
+          env.DB.prepare(`
+            DELETE FROM detainees 
+            WHERE id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
+          `)
+        ]);
+
         return new Response(JSON.stringify({ success: true, category }), { status: 200, headers: corsHeaders });
       }
 

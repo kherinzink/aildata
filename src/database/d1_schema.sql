@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS detainees (
 CREATE TABLE IF NOT EXISTS detentions (
     id TEXT PRIMARY KEY,
     detainee_id TEXT,
+    category TEXT,
     book_date_gcj TEXT,
     departure_date TEXT,
     cell TEXT,
@@ -109,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_detainees_jacket ON detainees(jacket_number);
 CREATE INDEX IF NOT EXISTS idx_detainees_ice_case ON detainees(ice_case_number);
 CREATE INDEX IF NOT EXISTS idx_detainees_name ON detainees(name);
 CREATE INDEX IF NOT EXISTS idx_detentions_detainee_id ON detentions(detainee_id);
+CREATE INDEX IF NOT EXISTS idx_detentions_category ON detentions(category);
 CREATE INDEX IF NOT EXISTS idx_detentions_departure ON detentions(departure_date);
 CREATE INDEX IF NOT EXISTS idx_dynamic_records_category ON dynamic_records(category);
 CREATE INDEX IF NOT EXISTS idx_users_invite_token ON users(invite_token);
