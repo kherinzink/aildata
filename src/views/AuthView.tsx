@@ -1,23 +1,115 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { loginUser, registerUser } from '../services/dataService';
+import { loginUser, registerUser, getSetupStatus, validateInvite, activateAccount } from '../services/dataService';
 
 interface AuthViewProps {
   onLoginSuccess: () => void;
 }
 
 export function AuthView({ onLoginSuccess }: AuthViewProps) {
-  const [isRegistering, setIsRegistering] = useState<boolean>(false);
+  const [needsSetup, setNeedsSetup] = useState<boolean>(false);
+  const [checkingSetup, setCheckingSetup] = useState<boolean>(true);
+
+  // Invite Flow State
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState<string | null>(null);
+  const [inviteRole, setInviteRole] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+
+  // Form Fields
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
-  const [role, setRole] = useState<string>('viewer');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  const handleSubmit = async () => {
+  useEffect(() => {
+    let isMounted = true;
+
+    // Check for ?invite=token in browser URL
+    let tokenFromUrl: string | null = null;
+    if (typeof window !== 'undefined' && window.location) {
+      const searchParams = new URLSearchParams(window.location.search);
+      tokenFromUrl = searchParams.get('invite');
+      if (!tokenFromUrl && window.location.hash.includes('invite=')) {
+        const hashParams = new URLSearchParams(window.location.hash.split('?')[1] || window.location.hash.substring(1));
+        tokenFromUrl = hashParams.get('invite');
+      }
+    }
+
+    if (tokenFromUrl) {
+      setInviteToken(tokenFromUrl);
+      validateInvite(tokenFromUrl)
+        .then(res => {
+          if (!isMounted) return;
+          if (res.valid && res.email) {
+            setInviteEmail(res.email);
+            setInviteRole(res.role || 'viewer');
+          } else {
+            setInviteError(res.error || 'Invitation link is invalid or expired.');
+          }
+          setCheckingSetup(false);
+        })
+        .catch(() => {
+          if (isMounted) {
+            setInviteError('Failed to validate invitation link.');
+            setCheckingSetup(false);
+          }
+        });
+      return () => { isMounted = false; };
+    }
+
+    // Normal setup check if no invite token
+    getSetupStatus()
+      .then(res => {
+        if (isMounted) {
+          setNeedsSetup(res.needsSetup);
+          setCheckingSetup(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setCheckingSetup(false);
+      });
+
+    return () => { isMounted = false; };
+  }, []);
+
+  const handleActivateSubmit = async () => {
     setError(null);
-    setSuccessMsg(null);
+    if (!password || !confirmPassword) {
+      setError('Please choose and confirm your password.');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters long.');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    if (!inviteToken) return;
+
+    setLoading(true);
+    try {
+      await activateAccount(inviteToken, password);
+      // Clean query parameter from browser address bar
+      if (typeof window !== 'undefined' && window.history) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+      onLoginSuccess();
+    } catch (err: any) {
+      setError(err.message || 'Activation failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStandardSubmit = async () => {
+    setError(null);
     if (!email || !password) {
       setError('Please enter both email and password.');
       return;
@@ -25,11 +117,12 @@ export function AuthView({ onLoginSuccess }: AuthViewProps) {
 
     setLoading(true);
     try {
-      if (isRegistering) {
-        await registerUser(email, password, role);
-        setSuccessMsg('Account created successfully! You can now log in.');
-        setIsRegistering(false);
+      if (needsSetup) {
+        // First-use initial administrator onboarding
+        await registerUser(email, password, 'admin');
+        onLoginSuccess();
       } else {
+        // Standard user login
         await loginUser(email, password);
         onLoginSuccess();
       }
@@ -40,21 +133,114 @@ export function AuthView({ onLoginSuccess }: AuthViewProps) {
     }
   };
 
+  if (checkingSetup) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color="#2563eb" />
+      </View>
+    );
+  }
+
+  // 1. Invite Error View
+  if (inviteToken && inviteError) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.card}>
+          <Text style={styles.title}>Aildata Security Portal</Text>
+          <Text style={styles.subtitle}>Invitation Link Expired or Invalid</Text>
+          <Text style={styles.errorText}>{inviteError}</Text>
+          <TouchableOpacity
+            style={styles.button}
+            onPress={() => {
+              setInviteToken(null);
+              setInviteError(null);
+              if (typeof window !== 'undefined' && window.history) {
+                window.history.replaceState({}, document.title, window.location.pathname);
+              }
+            }}
+          >
+            <Text style={styles.buttonText}>Go to Sign In</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // 2. Invite Activation View (User sets their own password)
+  if (inviteToken && inviteEmail) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.card}>
+          <Text style={styles.title}>Aildata Account Activation</Text>
+          <Text style={styles.subtitle}>
+            Welcome! You have been invited to join Aildata. Create your password to activate your account.
+          </Text>
+
+          <View style={styles.inviteBadge}>
+            <Text style={styles.inviteBadgeText}>
+              Account: <Text style={{ fontWeight: '700' }}>{inviteEmail}</Text> • Role: <Text style={{ fontWeight: '700' }}>{(inviteRole || 'viewer').toUpperCase()}</Text>
+            </Text>
+          </View>
+
+          {error && <Text style={styles.errorText}>{error}</Text>}
+
+          <Text style={styles.label}>Choose Your Password</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Minimum 8 characters"
+            placeholderTextColor="#888"
+            secureTextEntry
+            value={password}
+            onChangeText={setPassword}
+          />
+
+          <Text style={styles.label}>Confirm Password</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Repeat your password"
+            placeholderTextColor="#888"
+            secureTextEntry
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+          />
+
+          <TouchableOpacity style={styles.button} onPress={handleActivateSubmit} disabled={loading}>
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Activate Account & Sign In</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // 3. Standard Login / First-Time Admin Setup View
   return (
     <View style={styles.container}>
       <View style={styles.card}>
         <Text style={styles.title}>Aildata Security Portal</Text>
         <Text style={styles.subtitle}>
-          {isRegistering ? 'Create a Cloudflare D1 Account' : 'Sign in to access your secure workspace'}
+          {needsSetup 
+            ? 'First-Time Setup: Create Initial Administrator Account'
+            : 'Sign in to access your secure workspace'}
         </Text>
 
+        {needsSetup && (
+          <View style={styles.setupBanner}>
+            <Text style={styles.setupBannerText}>
+              🛡️ No administrator account detected. The first registered account is automatically granted root Administrator privileges.
+            </Text>
+          </View>
+        )}
+
         {error && <Text style={styles.errorText}>{error}</Text>}
-        {successMsg && <Text style={styles.successText}>{successMsg}</Text>}
 
         <Text style={styles.label}>Email Address</Text>
         <TextInput
           style={styles.input}
-          placeholder="e.g. user@aildata.org"
+          placeholder="e.g. admin@aildata.org"
           placeholderTextColor="#888"
           autoCapitalize="none"
           keyboardType="email-address"
@@ -72,44 +258,14 @@ export function AuthView({ onLoginSuccess }: AuthViewProps) {
           onChangeText={setPassword}
         />
 
-        {isRegistering && (
-          <>
-            <Text style={styles.label}>Role (RBAC)</Text>
-            <View style={styles.roleContainer}>
-              {['viewer', 'analyst', 'admin'].map((r) => (
-                <TouchableOpacity
-                  key={r}
-                  style={[styles.roleButton, role === r && styles.activeRoleButton]}
-                  onPress={() => setRole(r)}
-                >
-                  <Text style={[styles.roleText, role === r && styles.activeRoleText]}>
-                    {r.toUpperCase()}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </>
-        )}
-
-        <TouchableOpacity style={styles.button} onPress={handleSubmit} disabled={loading}>
+        <TouchableOpacity style={styles.button} onPress={handleStandardSubmit} disabled={loading}>
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.buttonText}>{isRegistering ? 'Register Account' : 'Sign In'}</Text>
+            <Text style={styles.buttonText}>
+              {needsSetup ? 'Create Administrator Account' : 'Sign In'}
+            </Text>
           )}
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.switchButton}
-          onPress={() => {
-            setIsRegistering(!isRegistering);
-            setError(null);
-            setSuccessMsg(null);
-          }}
-        >
-          <Text style={styles.switchText}>
-            {isRegistering ? 'Already have an account? Sign In' : "Don't have an account? Register"}
-          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -126,7 +282,7 @@ const styles = StyleSheet.create({
   },
   card: {
     width: '100%',
-    maxWidth: 420,
+    maxWidth: 440,
     backgroundColor: '#ffffff',
     borderRadius: 12,
     padding: 30,
@@ -146,21 +302,40 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: '#64748b',
-    marginBottom: 24,
-    textAlign: 'center'
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  inviteBadge: {
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  inviteBadgeText: {
+    color: '#166534',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  setupBanner: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  setupBannerText: {
+    color: '#1d4ed8',
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 18,
   },
   errorText: {
     backgroundColor: '#fee2e2',
     color: '#991b1b',
-    padding: 10,
-    borderRadius: 6,
-    fontSize: 13,
-    marginBottom: 16,
-    textAlign: 'center'
-  },
-  successText: {
-    backgroundColor: '#dcfce7',
-    color: '#166534',
     padding: 10,
     borderRadius: 6,
     fontSize: 13,
@@ -184,33 +359,6 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     marginBottom: 16
   },
-  roleContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 20
-  },
-  roleButton: {
-    flex: 1,
-    paddingVertical: 10,
-    marginHorizontal: 4,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    borderRadius: 8,
-    alignItems: 'center',
-    backgroundColor: '#f8fafc'
-  },
-  activeRoleButton: {
-    backgroundColor: '#2563eb',
-    borderColor: '#2563eb'
-  },
-  roleText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#475569'
-  },
-  activeRoleText: {
-    color: '#ffffff'
-  },
   button: {
     backgroundColor: '#2563eb',
     borderRadius: 8,
@@ -222,14 +370,5 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '600'
-  },
-  switchButton: {
-    marginTop: 16,
-    alignItems: 'center'
-  },
-  switchText: {
-    color: '#2563eb',
-    fontSize: 14,
-    fontWeight: '500'
   }
 });

@@ -1,79 +1,97 @@
 # Aildata Framework - Technical Architecture Documentation
 
-This document provides a comprehensive technical overview of the **Aildata** framework, detailing its cloud-native architecture, database schema, Cloudflare Worker backend, secure email authentication, and spreadsheet import pipeline.
+This document provides a comprehensive technical specification of the **Aildata** framework, detailing its cloud-native architecture, dual-tier relational database schema, Cloudflare Worker backend, secure email authentication with first-use setup, deterministic ingestion normalizer, and 1-year automated retention governance.
 
 ---
 
 ## 1. System Architecture & Overview
 
-Aildata is built as a cloud-native application transitioning from a local-first model to a pure serverless edge architecture powered by **Cloudflare D1** and **Cloudflare Workers**.
+Aildata is built as a cloud-native application running on a pure serverless edge architecture powered by **Cloudflare D1** and **Cloudflare Workers**:
 
-- **Frontend:** React Native Web (`App.tsx`, views for Dashboard, Spreadsheet Grid, File Import, and Auth).
-- **Backend Edge API:** Cloudflare Worker (`worker/index.ts`) handling REST endpoints, security middleware, and D1 database integration.
-- **Database:** Serverless SQLite at the edge via **Cloudflare D1**.
-- **Security Layer:** Email-based user registration and authentication with PBKDF2 password hashing, secure JWT session tokens, and hardened Role-Based Access Control (RBAC).
-
----
-
-## 2. Database Schema Design
-
-The relational schema is optimized for SQLite and Cloudflare D1 (`src/database/d1_schema.sql`):
-
-1. **`dynamic_records`**: Flexible key-value/JSON store used for high-performance bulk imports of unstructured spreadsheet rows.
-2. **Normalized Relational Tables**:
-   - `detainees`: Core subject profiles.
-   - `detentions`: Booking and facility stays.
-   - `charges`: Legal charges linked to detentions.
-   - `legal_proceedings`: Judge orders and hearing dates.
-   - `correspondence`: Penpals and location notes.
-3. **`users` Table (Authentication & RBAC)**:
-   - `id` (TEXT, PRIMARY KEY)
-   - `email` (TEXT, UNIQUE, NOT NULL)
-   - `password_hash` (TEXT, NOT NULL - securely hashed using Web Crypto PBKDF2)
-   - `role` (TEXT, NOT NULL DEFAULT 'viewer' - `admin`, `analyst`, `viewer`)
-   - `created_at` (DATETIME)
+- **Frontend Application:** React Native (Expo SDK 58 / React Native Web) providing responsive workspaces across desktop and mobile devices.
+- **Backend Edge Gateway:** Cloudflare Worker (`worker/index.ts`) handling REST endpoints, RBAC security middleware, D1 batch transactions, and scheduled cron jobs.
+- **Database Engine:** Serverless SQLite at the edge via **Cloudflare D1** (`aildata-db`).
+- **Security & RBAC:** PBKDF2 Web Crypto password hashing, secure JWT bearer tokens, initial admin bootstrapping with permanent public self-registration lockout, and role enforcement (`viewer`, `analyst`, `admin`).
+- **Data Lifecycle Governance:** Ephemeral 1-year retention policy with daily summary metric rollups and cascading deletion of expired custody detentions.
 
 ---
 
-## 3. Cloudflare Worker API Backend (`worker/index.ts`)
+## 2. Database Schema Design (`src/database/d1_schema.sql`)
 
-The Cloudflare Worker acts as the serverless API gateway connecting the frontend to Cloudflare D1:
+The database architecture employs a **Dual-Tier Storage Strategy**:
 
-- **Security Middleware**: 
-  - Verifies JWT session tokens.
-  - Enforces RBAC permissions at the edge.
-  - **Hardened Registration**: Ensures that privileged roles (`admin`, `analyst`) can only be assigned by existing administrators.
-- **Email Authentication (AuthN)**:
-  - `POST /api/auth/register`: Hashes passwords using Web Crypto PBKDF2 (100,000 iterations, SHA-256).
-  - `POST /api/auth/login`: Validates credentials and issues signed JWT session tokens.
-- **Data REST Endpoints**:
-  - `GET /api/records`: Fetches dynamic records.
-  - `POST /api/records/batch`: Executes high-performance batch insertions using D1 transactions.
-  - `DELETE /api/records`: Clears all dynamic records.
+### Tier 1 — Raw Dynamic Staging (`dynamic_records`)
+Stores immutable JSON snapshots of imported spreadsheet rows (`category = import_<sheetName>`), guaranteeing auditability and zero data loss regardless of source schema variance.
 
----
+### Tier 2 — Normalized Relational Core
+Structured relational tables populated deterministically during batch ingestion:
+- **`detainees`:** Core subject profiles (`id`, `jacket_number`, `name`, `age`, `race`, `sex`, `country`, `ice_case_number`, `is_uncharged`, `created_at`, `updated_at`).
+- **`detentions`:** Facility stays and bookings (`id`, `detainee_id`, `book_date_gcj`, `departure_date`, `cell`, `days_in_gcj`, `days_prior_facility`, `came_from`, `sent_to_note`, `delivering_agency`, `duplicate_jacket_returned`).
+- **`charges`:** Child offenses linked to detentions (`id`, `detention_id`, `charge_description`).
+- **`legal_proceedings`:** Judicial rulings and orders linked to detentions (`id`, `detention_id`, `judge_ordered`, `decision_date`, `day_wait`, `notes`).
+- **`correspondence`:** Penpal connections and location notes (`id`, `detainee_id`, `penpal`, `loc_note`).
 
-## 4. Frontend Data Service & State (`src/services/dataService.ts`)
-
-The data abstraction layer provides a unified interface to the Cloudflare Worker API:
-
-- **Session & Token Management**: Securely manages bearer tokens and user emails in `localStorage`, automatically attaching `Authorization: Bearer <token>` headers to all secure API requests.
-- **API Consolidation**: All data mutations and queries are routed exclusively to the configured `EXPO_PUBLIC_API_BASE_URL`.
+### Tier 3 — Users & Retention Rollups
+- **`users`:** Secure accounts (`id`, `email`, `password_hash`, `role`, `created_at`).
+- **`aggregate_rollups`:** Permanent daily metric snapshots (`snapshot_date`, `total_active`, `total_released`, `with_penpal`, `by_country_json`, `by_agency_json`, `by_sex_json`).
 
 ---
 
-## 5. Spreadsheet Import Pipeline (`ImportFileView.tsx`)
+## 3. Security, Authentication & Initial Admin Setup
 
-Aildata supports high-speed client-side parsing of `.xlsx`, `.ods`, and `.csv` files using SheetJS:
+### Initial Setup Flow (`GET /api/auth/setup-status`)
+1. On boot, the client checks `/api/auth/setup-status`.
+2. If `SELECT COUNT(*) FROM users` is `0`, the API reports `needsSetup: true`.
+3. The frontend displays the initial administrator setup form. The first account created is automatically assigned the `admin` role.
+4. Once the first account exists, `needsSetup` becomes `false` permanently. Public self-registration is completely disabled.
 
-- **Validation & Batching**: Validates row data and performs instant bulk batch insertions into Cloudflare D1, preventing UI freezing during large imports.
-- **Automatic Category Mapping**: Maps imported sheets to dynamic record categories automatically.
+### One-Click Team Invites & Self-Activation
+- Any subsequent user creation requires an authenticated administrator token (`role === 'admin'`).
+- **No Admin-Managed Passwords:** Administrators use `POST /api/auth/invite` to generate a 7-day cryptographically secure activation token (`invite_token`).
+- The administrator copies the activation link (e.g. `https://app.aildata.org/?invite=inv_...`) and sends it to the team member.
+- The team member opens the link, the client validates the token via `GET /api/auth/invite/:token`, and the user chooses their own password via `POST /api/auth/activate`.
+- Once activated, the one-time token is cleared, the user's password hash is stored, and an authenticated JWT session is issued immediately.
 
 ---
 
-## 6. Security & Authorization (RBAC)
+## 4. Ingestion Normalization Pipeline (`worker/src/normalizer.ts`)
 
-Authorization is enforced via Role-Based Access Control (RBAC) at both the Frontend and the Backend Edge:
-- **`admin`**: Full privileges including user management, database clearing, and data mutations.
-- **`analyst`**: Data import privileges, spreadsheet management, and record creation.
-- **`viewer`**: Read-only access to dashboards and spreadsheet grids.
+During `POST /api/records/batch`:
+1. **Header Alias Resolution:** Inspects arbitrary column keys against a dictionary of aliases (e.g., `COO` / `Country of Origin` → `country`; `Book Date in GCJ` → `book_date_gcj`; `Charges` → `charges`).
+2. **Charge Splitting:** Semicolon `;` and newline separated charges are split into individual child rows in `charges`.
+3. **Atomic Batching:** Statements for raw staging and relational tables are combined and executed in atomic chunks of 80 statements via `env.DB.batch([...])`.
+
+---
+
+## 5. Automated 1-Year Retention Lifecycle (`worker/src/retention.ts`)
+
+To balance historical data retention with privacy and storage efficiency:
+- **Daily Cron Trigger:** Runs daily at 03:00 UTC (`crons = ["0 3 * * *"]`).
+- **Rollup Preservation:** Calculates total active, released, penpal counts, and demographic distributions for the day and saves an immutable row into `aggregate_rollups`.
+- **1-Year Purge Sweep:**
+  - Deletes detention records where `departure_date < (today - 365 days)`.
+  - Cascades deletions to associated `charges`, `legal_proceedings`, and `correspondence`.
+  - Prunes orphaned detainees who have no remaining detention records.
+  - Deletes raw dynamic staging records older than 1 year (`created_at < datetime('now', '-1 year')`).
+- **On-Demand Admin Purge:** Administrators can trigger the rollup and purge routine on demand via `POST /api/maintenance/purge`.
+
+---
+
+## 6. API Gateway Contract (`worker/index.ts`)
+
+| Method & Path | Minimum Role | Description |
+| :--- | :--- | :--- |
+| `GET /api/auth/setup-status` | Public | Returns `{ needsSetup: boolean }` based on user count |
+| `POST /api/auth/login` | Public | Validates credentials and returns 7-day JWT session token |
+| `POST /api/auth/register` | **Admin** (or First Use) | Provisions root admin account during initial setup |
+| `POST /api/auth/invite` | **Admin** | Generates a 7-day secure one-click activation link for a colleague |
+| `GET /api/auth/invite/:token` | Public | Validates an invitation link and returns pre-filled email and role |
+| `POST /api/auth/activate` | Public | Allows invited users to choose their own password and activate account |
+| `GET /api/records` | Viewer | Returns raw dynamic records (supports `?category=`) |
+| `GET /api/detainees` | Viewer | Returns normalized subjects joined with latest detention summary |
+| `GET /api/detainees/:id` | Viewer | Returns full master-detail relational profile |
+| `GET /api/stats` | Viewer | Returns server-side SQL analytics and live entity counts |
+| `POST /api/records/batch` | **Analyst** | Batch-ingests rows into raw staging and normalized relational tables |
+| `DELETE /api/records/category/:cat` | **Admin** | Deletes all records belonging to an imported sheet category |
+| `DELETE /api/records` | **Admin** | Clears all dynamic records and cascades relational entities |
+| `POST /api/maintenance/purge` | **Admin** | Manually triggers the 1-year rollup snapshot and purge job |

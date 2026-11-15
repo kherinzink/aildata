@@ -3,6 +3,9 @@
 # dependencies
 node_modules/
 
+# Cloudflare
+.wrangler/
+
 # Expo
 .expo/
 dist/
@@ -35,6 +38,9 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# generated test spreadsheets
+test_*.xlsx
 
 # generated native folders
 /ios

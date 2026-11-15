@@ -6,3 +6,6 @@ compatibility_date = "2026-11-07"
 binding = "DB"
 database_name = "aildata-db"
 database_id = "8c1a3f6b-05e0-4a46-b331-183fdd3640be"
+
+[triggers]
+crons = ["0 3 * * *"]
