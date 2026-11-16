@@ -1,5 +1,6 @@
 import { normalizeSpreadsheetRow, NormalizedEntity } from './src/normalizer';
 import { runRetentionJob } from './src/retention';
+import { analyzeSpreadsheetRows, commitCuratedIngestion } from './src/deduplicator';
 
 export interface Env {
   DB: D1Database;
@@ -995,6 +996,45 @@ export default {
           sexDistribution: sexDistribution.map(r => [r.sex, r.count]),
           rollups
         }), { status: 200, headers: corsHeaders });
+      }
+
+      // 10b. Pre-Flight Analysis for Curation & Deduplication (Analyst+)
+      if (path === '/api/records/analyze' && method === 'POST') {
+        if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Analysis requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
+        }
+
+        const body: any = await request.json();
+        const { category, rows } = body;
+
+        if (!category || !rows || !Array.isArray(rows)) {
+          return new Response(JSON.stringify({ error: 'Category and rows array required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const analysis = await analyzeSpreadsheetRows(env.DB, category, rows);
+        return new Response(JSON.stringify(analysis), { status: 200, headers: corsHeaders });
+      }
+
+      // 10c. Curated Ingestion Commit (Analyst+)
+      if (path === '/api/records/commit' && method === 'POST') {
+        if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Ingestion requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
+        }
+
+        const body: any = await request.json();
+        const { category, cleanRows, curatedDecisions } = body;
+
+        if (!category || !Array.isArray(cleanRows) || !Array.isArray(curatedDecisions)) {
+          return new Response(JSON.stringify({ error: 'category, cleanRows, and curatedDecisions arrays are required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const result = await commitCuratedIngestion(env.DB, {
+          category,
+          cleanRows,
+          curatedDecisions
+        });
+
+        return new Response(JSON.stringify(result), { status: 200, headers: corsHeaders });
       }
 
       // 11. Batch Ingest & Relational Normalization (Analyst+)

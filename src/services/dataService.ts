@@ -74,6 +74,104 @@ export interface AdminUser {
   is_locked: number | boolean;
 }
 
+export interface FieldDiff {
+  field: string;
+  label: string;
+  existing: string | null;
+  incoming: string | null;
+  status: 'identical' | 'added' | 'changed' | 'removed';
+}
+
+export interface ExistingDetaineeRef {
+  id: string;
+  jacket_number: string | null;
+  name: string | null;
+  age: string | null;
+  race: string | null;
+  sex: string | null;
+  country: string | null;
+  ice_case_number: string | null;
+}
+
+export interface ExistingDetentionRef {
+  id: string;
+  detainee_id: string;
+  book_date_gcj: string | null;
+  departure_date: string | null;
+  cell: string | null;
+  days_in_gcj: string | null;
+  delivering_agency: string | null;
+  charges_summary?: string;
+}
+
+export interface FlaggedRecord {
+  id: string;
+  rowIndex: number;
+  matchType: 'EXACT_DUPLICATE' | 'STAY_UPDATE' | 'REPEAT_BOOKING' | 'AMBIGUOUS_MATCH' | 'KEY_CONFLICT';
+  severity: 'info' | 'warning' | 'danger';
+  reason: string;
+  suggestedAction: 'skip' | 'merge' | 'create_new';
+  existingDetainee: ExistingDetaineeRef;
+  existingDetention?: ExistingDetentionRef | null;
+  existingCharges: string[];
+  incomingDetainee: Record<string, any>;
+  incomingDetention: Record<string, any>;
+  incomingCharges: string[];
+  incomingLegal: Record<string, any>;
+  incomingCorrespondence: Record<string, any>;
+  rawJson: string;
+  diffs: FieldDiff[];
+}
+
+export interface CleanRecord {
+  rowIndex: number;
+  normalized: any;
+  rawJson: string;
+}
+
+export interface IngestionAnalysisResult {
+  summary: {
+    totalRows: number;
+    cleanCount: number;
+    flaggedCount: number;
+    exactDuplicatesCount: number;
+    stayUpdatesCount: number;
+    repeatBookingsCount: number;
+    ambiguousCount: number;
+    conflictsCount: number;
+  };
+  cleanRows: CleanRecord[];
+  flaggedItems: FlaggedRecord[];
+}
+
+export interface CuratedDecision {
+  id: string;
+  rowIndex: number;
+  action: 'merge' | 'create_new' | 'skip';
+  chosenSource: 'existing' | 'incoming' | 'custom';
+  targetDetaineeId?: string;
+  targetDetentionId?: string;
+  detaineeOverrides?: Record<string, string | null>;
+  detentionOverrides?: Record<string, string | null>;
+  incomingRow: Record<string, any>;
+}
+
+export interface IngestionCommitPayload {
+  category: string;
+  cleanRows: CleanRecord[];
+  curatedDecisions: CuratedDecision[];
+}
+
+export interface IngestionCommitResult {
+  success: boolean;
+  insertedDetainees: number;
+  updatedDetainees: number;
+  insertedDetentions: number;
+  updatedDetentions: number;
+  skippedRows: number;
+  totalProcessed: number;
+}
+
 const API_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://aildata.khanis.workers.dev';
 
 // In-memory fallback for environments without localStorage
@@ -319,6 +417,28 @@ export async function insertBatchRecords(category: string, rows: Record<string, 
   const result = await res.json();
   if (!res.ok) throw new Error(result.error || 'Failed to batch insert records');
   return rows.length;
+}
+
+export async function analyzeBatchRecords(category: string, rows: Record<string, any>[]): Promise<IngestionAnalysisResult> {
+  const res = await apiFetch(`${API_URL}/api/records/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category, rows })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to analyze records');
+  return data;
+}
+
+export async function commitCuratedBatch(payload: IngestionCommitPayload): Promise<IngestionCommitResult> {
+  const res = await apiFetch(`${API_URL}/api/records/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to commit curated records');
+  return data;
 }
 
 export async function getRecords(category?: string): Promise<DynamicRecord[]> {
