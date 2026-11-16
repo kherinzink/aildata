@@ -87,6 +87,13 @@ To balance historical data retention with privacy and storage efficiency:
 | `POST /api/auth/invite` | **Admin** | Generates a 7-day secure one-click activation link for a colleague |
 | `GET /api/auth/invite/:token` | Public | Validates an invitation link and returns pre-filled email and role |
 | `POST /api/auth/activate` | Public | Allows invited users to choose their own password and activate account |
+| `GET /api/admin/users` | **Admin** | Lists all team accounts with roles, statuses, last login, and lock metrics |
+| `PATCH /api/admin/users/:id/role` | **Admin** | Promotes/demotes user (`admin`, `analyst`, `viewer`) with last-admin guard |
+| `PATCH /api/admin/users/:id/status` | **Admin** | Suspends/reactivates user account with self/sole-admin safeguards |
+| `POST /api/admin/users/:id/unlock` | **Admin** | Unlocks brute-force rate-limited accounts |
+| `POST /api/admin/users/:id/reset-invite` | **Admin** | Generates new 7-day secure activation / password reset link |
+| `POST /api/admin/users/:id/password` | **Admin** | Direct manual password reset with per-user salt generation |
+| `DELETE /api/admin/users/:id` | **Admin** | Permanently deletes user account with self/sole-admin protections |
 | `GET /api/records` | Viewer | Returns raw dynamic records (supports `?category=`) |
 | `GET /api/detainees` | Viewer | Returns normalized subjects joined with latest detention summary |
 | `GET /api/detainees/:id` | Viewer | Returns full master-detail relational profile |

@@ -52,8 +52,8 @@ const ALIAS_MAP: Record<string, string[]> = {
   ice_case_number: ['ice case #', 'ice case number', 'a-number', 'case number', 'ice case number/a#', 'a#'],
 
   // Detention fields
-  book_date_gcj: ['book date', 'gcj book date', 'book date in gcj', 'booking date'],
-  departure_date: ['departure date', 'release date', 'dep date', 'departure date (or today)', 'dep_date'],
+  book_date_gcj: ['book date', 'gcj book date', 'book date in gcj', 'booking date', 'book_date', 'book_date_gcj'],
+  departure_date: ['departure date', 'release date', 'dep date', 'departure date (or today)', 'dep_date', 'departure_date'],
   cell: ['cell', 'housing', 'cell / pod', 'unit'],
   days_in_gcj: ['days in gcj', 'days gcj', 'total days'],
   days_prior_facility: ['days prior facility', 'days prior'],

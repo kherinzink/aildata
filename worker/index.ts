@@ -1,12 +1,45 @@
 import { normalizeSpreadsheetRow, NormalizedEntity } from './src/normalizer';
 import { runRetentionJob } from './src/retention';
+import { analyzeSpreadsheetRows, commitCuratedIngestion } from './src/deduplicator';
 
 export interface Env {
   DB: D1Database;
   JWT_SECRET?: string;
 }
 
-// Web Crypto PBKDF2 password hashing helper
+const DEFAULT_JWT_SECRET = 'aildata_secure_edge_hmac_secret_2026_primary_key';
+
+// Base64URL encoding/decoding utilities (standard Web Crypto compatible)
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function fromBase64Url(str: string): Uint8Array {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  const binary = atob(base64);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// Generate a 16-byte cryptographically secure random salt in hex
+function generateSalt(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Web Crypto PBKDF2 password hashing helper (100,000 iterations)
 async function hashPassword(password: string, salt: string = 'aildata_salt'): Promise<string> {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
@@ -34,13 +67,42 @@ async function hashPassword(password: string, salt: string = 'aildata_salt'): Pr
     .join('');
 }
 
-// Extract and verify session token
-function getAuthenticatedUser(request: Request): { id: string; email: string; role: string } | null {
+// Cryptographic HMAC-SHA256 Token Signing
+async function createSignedToken(payload: Record<string, any>, secret: string = DEFAULT_JWT_SECRET): Promise<string> {
+  const enc = new TextEncoder();
+  const payloadB64 = toBase64Url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payloadB64));
+  const sigB64 = toBase64Url(new Uint8Array(sig));
+  return `${payloadB64}.${sigB64}`;
+}
+
+// Cryptographic HMAC-SHA256 Token Verification
+async function verifySignedToken(token: string, secret: string = DEFAULT_JWT_SECRET): Promise<{ id: string; email: string; role: string } | null> {
   try {
-    const authHeader = request.headers.get('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-    const token = authHeader.split(' ')[1];
-    const payload = JSON.parse(atob(token));
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [payloadB64, sigB64] = parts;
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const sigBytes = fromBase64Url(sigB64);
+    const valid = await crypto.subtle.verify('HMAC', key, sigBytes.buffer as ArrayBuffer, enc.encode(payloadB64));
+    if (!valid) return null;
+
+    const payloadJson = new TextDecoder().decode(fromBase64Url(payloadB64));
+    const payload = JSON.parse(payloadJson);
     if (payload.exp && payload.exp < Date.now()) return null;
     return payload;
   } catch {
@@ -48,15 +110,46 @@ function getAuthenticatedUser(request: Request): { id: string; email: string; ro
   }
 }
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Content-Type': 'application/json',
-  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-  'Pragma': 'no-cache',
-  'Expires': '0'
-};
+// Extract and verify signed session token
+async function getAuthenticatedUser(request: Request, env: Env): Promise<{ id: string; email: string; role: string } | null> {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+    const token = authHeader.split(' ')[1];
+    const secret = env.JWT_SECRET || DEFAULT_JWT_SECRET;
+    return await verifySignedToken(token, secret);
+  } catch {
+    return null;
+  }
+}
+
+// Strict Origin-Restricted CORS
+function getCorsHeaders(request: Request): Record<string, string> {
+  const origin = request.headers.get('Origin');
+  const allowedOrigins = [
+    'https://aildata-web.pages.dev',
+    'http://localhost:8081',
+    'http://localhost:19006',
+    'http://localhost:3000'
+  ];
+
+  let allowOrigin = 'https://aildata-web.pages.dev';
+  if (origin) {
+    if (allowedOrigins.includes(origin) || origin.endsWith('.aildata-web.pages.dev')) {
+      allowOrigin = origin;
+    }
+  }
+
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  };
+}
 
 export default {
   // Cloudflare Workers Scheduled Cron Trigger Handler (Daily at 03:00 UTC)
@@ -68,6 +161,8 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+    const corsHeaders = getCorsHeaders(request);
+    const jwtSecret = env.JWT_SECRET || DEFAULT_JWT_SECRET;
 
     if (method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
@@ -91,7 +186,7 @@ export default {
   <div class="card">
     <div class="badge">Aildata D1 Edge Worker Active</div>
     <h1>Aildata Relational & Ingestion Gateway</h1>
-    <p>Connected to Cloudflare D1 with Role-Based Access Control and automated 1-year retention lifecycle.</p>
+    <p>Connected to Cloudflare D1 with Role-Based Access Control, HMAC token signatures, and automated 1-year retention lifecycle.</p>
   </div>
 </body>
 </html>`;
@@ -106,7 +201,7 @@ export default {
         return new Response(JSON.stringify({ needsSetup: totalUsers === 0 }), { status: 200, headers: corsHeaders });
       }
 
-      // 2. Auth: Login (Public)
+      // 2. Auth: Login (Public with rate limiting & transparent salt upgrade)
       if (path === '/api/auth/login' && method === 'POST') {
         const body: any = await request.json();
         const { email, password } = body;
@@ -115,22 +210,104 @@ export default {
           return new Response(JSON.stringify({ error: 'Email and password are required' }), { status: 400, headers: corsHeaders });
         }
 
-        const passwordHash = await hashPassword(password);
-        const user: any = await env.DB.prepare(
-          'SELECT id, email, role FROM users WHERE email = ? AND password_hash = ?'
-        ).bind(email.toLowerCase().trim(), passwordHash).first();
+        const cleanEmail = email.toLowerCase().trim();
 
-        if (!user) {
+        // Check brute-force lock
+        const lockRes: any = await env.DB.prepare(
+          'SELECT attempt_count, locked_until FROM failed_logins WHERE identifier = ?'
+        ).bind(cleanEmail).first();
+
+        if (lockRes && lockRes.locked_until && new Date(lockRes.locked_until).getTime() > Date.now()) {
+          const remainingMinutes = Math.max(1, Math.ceil((new Date(lockRes.locked_until).getTime() - Date.now()) / 60000));
+          return new Response(JSON.stringify({ 
+            error: `Account temporarily locked due to too many failed attempts. Please try again in ${remainingMinutes} minute(s).` 
+          }), { status: 429, headers: corsHeaders });
+        }
+
+        const user: any = await env.DB.prepare(
+          'SELECT id, email, role, status, password_hash, salt FROM users WHERE email = ?'
+        ).bind(cleanEmail).first();
+
+        let passwordValid = false;
+        let needsSaltUpgrade = false;
+
+        if (user) {
+          if (user.salt) {
+            // Modern format: unique per-user salt
+            const hash = await hashPassword(password, user.salt);
+            passwordValid = (hash === user.password_hash);
+          } else {
+            // Backward-compatible check against legacy static salt
+            const legacyHash = await hashPassword(password, 'aildata_salt');
+            if (legacyHash === user.password_hash) {
+              passwordValid = true;
+              needsSaltUpgrade = true;
+            }
+          }
+        }
+
+        if (!user || !passwordValid) {
+          // Increment failed attempt counter
+          const attempts = (lockRes?.attempt_count || 0) + 1;
+          if (attempts >= 5) {
+            await env.DB.prepare(`
+              INSERT INTO failed_logins (identifier, attempt_count, locked_until, last_attempt)
+              VALUES (?, ?, datetime('now', '+15 minutes'), CURRENT_TIMESTAMP)
+              ON CONFLICT(identifier) DO UPDATE SET
+                attempt_count = excluded.attempt_count,
+                locked_until = excluded.locked_until,
+                last_attempt = CURRENT_TIMESTAMP;
+            `).bind(cleanEmail, attempts).run();
+          } else {
+            await env.DB.prepare(`
+              INSERT INTO failed_logins (identifier, attempt_count, last_attempt)
+              VALUES (?, ?, CURRENT_TIMESTAMP)
+              ON CONFLICT(identifier) DO UPDATE SET
+                attempt_count = excluded.attempt_count,
+                last_attempt = CURRENT_TIMESTAMP;
+            `).bind(cleanEmail, attempts).run();
+          }
+
           return new Response(JSON.stringify({ error: 'Invalid email or password' }), { status: 401, headers: corsHeaders });
         }
 
-        const token = btoa(JSON.stringify({ id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 }));
-        return new Response(JSON.stringify({ success: true, token, user }), { status: 200, headers: corsHeaders });
+        // Check if account has been deactivated or suspended
+        if (user.status === 'suspended') {
+          return new Response(JSON.stringify({ 
+            error: 'Account has been deactivated. Please contact an administrator.' 
+          }), { status: 403, headers: corsHeaders });
+        }
+
+        // On successful authentication, clear any failed login lock
+        if (lockRes) {
+          await env.DB.prepare('DELETE FROM failed_logins WHERE identifier = ?').bind(cleanEmail).run();
+        }
+
+        // Transparently upgrade legacy salt to unique random salt
+        if (needsSaltUpgrade) {
+          const newSalt = generateSalt();
+          const newHash = await hashPassword(password, newSalt);
+          await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ?, last_login = CURRENT_TIMESTAMP WHERE id = ?').bind(newHash, newSalt, user.id).run();
+        } else {
+          await env.DB.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').bind(user.id).run();
+        }
+
+        // Issue cryptographically signed HMAC token
+        const token = await createSignedToken(
+          { id: user.id, email: user.email, role: user.role, status: user.status || 'active', exp: Date.now() + 86400000 * 7 },
+          jwtSecret
+        );
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          token, 
+          user: { id: user.id, email: user.email, role: user.role, status: user.status || 'active' } 
+        }), { status: 200, headers: corsHeaders });
       }
 
       // 3. Auth: Register (Admin only, except when 0 users exist to bootstrap initial admin)
       if (path === '/api/auth/register' && method === 'POST') {
-        const caller = getAuthenticatedUser(request);
+        const caller = await getAuthenticatedUser(request, env);
         
         // Count existing users
         const userCountRes = await env.DB.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>();
@@ -151,28 +328,31 @@ export default {
           return new Response(JSON.stringify({ error: 'Email and password are required' }), { status: 400, headers: corsHeaders });
         }
 
-        // On first use (0 users), enforce root admin role. Subsequent users default to viewer unless admin selects analyst/admin
         const assignedRole = totalUsers === 0 ? 'admin' : ((role === 'admin' || role === 'analyst') ? role : 'viewer');
         const userId = 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-        const passwordHash = await hashPassword(password);
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(password, salt);
 
         try {
           await env.DB.prepare(
-            'INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)'
-          ).bind(userId, email.toLowerCase().trim(), passwordHash, assignedRole).run();
+            'INSERT INTO users (id, email, password_hash, salt, role, status) VALUES (?, ?, ?, ?, ?, ?)'
+          ).bind(userId, email.toLowerCase().trim(), passwordHash, salt, assignedRole, 'active').run();
 
           // Only issue an auto-login token if this was first-time setup (0 existing users)
           const token = totalUsers === 0
-            ? btoa(JSON.stringify({ id: userId, email: email.toLowerCase().trim(), role: assignedRole, exp: Date.now() + 86400000 * 7 }))
+            ? await createSignedToken(
+                { id: userId, email: email.toLowerCase().trim(), role: assignedRole, status: 'active', exp: Date.now() + 86400000 * 7 },
+                jwtSecret
+              )
             : undefined;
 
           return new Response(JSON.stringify({ 
             success: true, 
             token, 
-            user: { id: userId, email: email.toLowerCase().trim(), role: assignedRole } 
+            user: { id: userId, email: email.toLowerCase().trim(), role: assignedRole, status: 'active' } 
           }), { status: 201, headers: corsHeaders });
         } catch (err: any) {
-          return new Response(JSON.stringify({ error: 'Email already registered or invalid data', details: err.message }), { status: 400, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'Email already registered or invalid data' }), { status: 400, headers: corsHeaders });
         }
       }
 
@@ -223,23 +403,28 @@ export default {
           return new Response(JSON.stringify({ error: 'This invitation link has expired' }), { status: 410, headers: corsHeaders });
         }
 
-        const passwordHash = await hashPassword(password);
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(password, salt);
         await env.DB.prepare(
-          'UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?'
-        ).bind(passwordHash, user.id).run();
+          'UPDATE users SET password_hash = ?, salt = ?, invite_token = NULL, invite_expires_at = NULL, status = ?, last_login = CURRENT_TIMESTAMP WHERE id = ?'
+        ).bind(passwordHash, salt, 'active', user.id).run();
 
-        const sessionToken = btoa(JSON.stringify({ id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 * 7 }));
+        const sessionToken = await createSignedToken(
+          { id: user.id, email: user.email, role: user.role, status: 'active', exp: Date.now() + 86400000 * 7 },
+          jwtSecret
+        );
+
         return new Response(JSON.stringify({ 
           success: true, 
           token: sessionToken, 
-          user: { id: user.id, email: user.email, role: user.role } 
+          user: { id: user.id, email: user.email, role: user.role, status: 'active' } 
         }), { status: 200, headers: corsHeaders });
       }
 
       // Authentication checkpoint for all protected /api endpoints
-      const authUser = getAuthenticatedUser(request);
+      const authUser = await getAuthenticatedUser(request, env);
       if (!authUser) {
-        return new Response(JSON.stringify({ error: 'Unauthorized: Session missing or expired' }), { status: 401, headers: corsHeaders });
+        return new Response(JSON.stringify({ error: 'Unauthorized: Session missing, invalid, or expired' }), { status: 401, headers: corsHeaders });
       }
 
       // 6. Auth: Invite Team Member (Admin only)
@@ -286,7 +471,239 @@ export default {
         }), { status: 201, headers: corsHeaders });
       }
 
-      // 4. Dynamic Records: Get All or by Category (Viewer+)
+      // ======================================================================
+      // Admin User Management Endpoints (Admin role strictly required)
+      // ======================================================================
+
+      // 6a. Admin: List All Users with Status and Lock Metrics
+      if (path === '/api/admin/users' && method === 'GET') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const { results } = await env.DB.prepare(`
+          SELECT 
+            u.id, 
+            u.email, 
+            u.role, 
+            COALESCE(u.status, 'active') as status,
+            u.created_at, 
+            u.last_login,
+            u.invite_expires_at,
+            CASE WHEN u.password_hash = 'PENDING_ACTIVATION' THEN 1 ELSE 0 END as is_pending_invite,
+            COALESCE(fl.attempt_count, 0) as failed_attempts,
+            fl.locked_until,
+            CASE WHEN fl.locked_until IS NOT NULL AND datetime(fl.locked_until) > datetime('now') THEN 1 ELSE 0 END as is_locked
+          FROM users u
+          LEFT JOIN failed_logins fl ON LOWER(fl.identifier) = LOWER(u.email)
+          ORDER BY u.created_at DESC;
+        `).all();
+
+        return new Response(JSON.stringify({ users: results || [] }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6b. Admin: Update User Role (Promote / Demote)
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/role') && (method === 'PATCH' || method === 'PUT')) {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/role', '');
+        const body: any = await request.json();
+        const { role: newRole } = body;
+
+        if (!['admin', 'analyst', 'viewer'].includes(newRole)) {
+          return new Response(JSON.stringify({ error: 'Invalid role specified. Must be admin, analyst, or viewer.' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role, status FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Prevent demoting the last active administrator
+        if (targetUser.role === 'admin' && newRole !== 'admin') {
+          const adminCountRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND COALESCE(status, 'active') = 'active'").first<{ count: number }>();
+          if ((adminCountRes?.count ?? 0) <= 1) {
+            return new Response(JSON.stringify({ error: 'Cannot demote the only remaining active administrator.' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(newRole, userId).run();
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          user: { id: userId, email: targetUser.email, role: newRole } 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6c. Admin: Update User Status (Activate / Suspend)
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/status') && (method === 'PATCH' || method === 'PUT')) {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/status', '');
+        const body: any = await request.json();
+        const { status: newStatus } = body;
+
+        if (!['active', 'suspended'].includes(newStatus)) {
+          return new Response(JSON.stringify({ error: 'Invalid status specified. Must be active or suspended.' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role, status FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Guard: Admin cannot suspend their own account
+        if (targetUser.id === authUser.id && newStatus === 'suspended') {
+          return new Response(JSON.stringify({ error: 'You cannot suspend your own administrator account.' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Guard: Cannot suspend the last active administrator
+        if (targetUser.role === 'admin' && newStatus === 'suspended') {
+          const adminCountRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND COALESCE(status, 'active') = 'active'").first<{ count: number }>();
+          if ((adminCountRes?.count ?? 0) <= 1) {
+            return new Response(JSON.stringify({ error: 'Cannot suspend the only remaining active administrator.' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        await env.DB.prepare('UPDATE users SET status = ? WHERE id = ?').bind(newStatus, userId).run();
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          user: { id: userId, email: targetUser.email, status: newStatus } 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6d. Admin: Unlock Rate-Limited / Brute-Force Locked Account
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/unlock') && method === 'POST') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/unlock', '');
+        const targetUser: any = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        await env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)').bind(targetUser.email).run();
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: `Account for ${targetUser.email} has been unlocked.` 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6e. Admin: Re-issue / Reset Activation or Password Link
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/reset-invite') && method === 'POST') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/reset-invite', '');
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        const inviteToken = 'inv_' + crypto.randomUUID().replace(/-/g, '');
+        const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+
+        await env.DB.batch([
+          env.DB.prepare('UPDATE users SET password_hash = ?, invite_token = ?, invite_expires_at = ? WHERE id = ?')
+            .bind('PENDING_ACTIVATION', inviteToken, expiresAt, userId),
+          env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)')
+            .bind(targetUser.email)
+        ]);
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          inviteToken, 
+          email: targetUser.email, 
+          role: targetUser.role, 
+          expiresAt 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6f. Admin: Direct Manual Password Reset
+      if (path.startsWith('/api/admin/users/') && path.endsWith('/password') && method === 'POST') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1].replace('/password', '');
+        const body: any = await request.json();
+        const { password } = body;
+
+        if (!password || password.length < 8) {
+          return new Response(JSON.stringify({ error: 'Password must be at least 8 characters' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(password, salt);
+
+        await env.DB.batch([
+          env.DB.prepare('UPDATE users SET password_hash = ?, salt = ?, invite_token = NULL, invite_expires_at = NULL WHERE id = ?')
+            .bind(passwordHash, salt, userId),
+          env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)')
+            .bind(targetUser.email)
+        ]);
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: `Password successfully updated for ${targetUser.email}.` 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 6g. Admin: Permanently Delete User
+      if (path.startsWith('/api/admin/users/') && method === 'DELETE') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const userId = path.split('/api/admin/users/')[1];
+        if (!userId) {
+          return new Response(JSON.stringify({ error: 'User ID is required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetUser: any = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(userId).first();
+        if (!targetUser) {
+          return new Response(JSON.stringify({ error: 'User not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Prevent admin from deleting their own account
+        if (targetUser.id === authUser.id) {
+          return new Response(JSON.stringify({ error: 'You cannot delete your own account.' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Prevent deleting the last administrator
+        if (targetUser.role === 'admin') {
+          const adminCountRes = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'").first<{ count: number }>();
+          if ((adminCountRes?.count ?? 0) <= 1) {
+            return new Response(JSON.stringify({ error: 'Cannot delete the only remaining administrator.' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId),
+          env.DB.prepare('DELETE FROM failed_logins WHERE LOWER(identifier) = LOWER(?)').bind(targetUser.email)
+        ]);
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          message: `User ${targetUser.email} has been permanently deleted.` 
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      // 7. Dynamic Records: Get All or by Category (Viewer+)
       if (path === '/api/records' && method === 'GET') {
         const category = url.searchParams.get('category');
         let query = 'SELECT id, category, data_json as dataJson, created_at as createdAt, updated_at as updatedAt FROM dynamic_records';
@@ -304,7 +721,7 @@ export default {
         return new Response(JSON.stringify(results), { status: 200, headers: corsHeaders });
       }
 
-      // 5. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
+      // 8. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
       if (path === '/api/detainees' && method === 'GET') {
         const limitParam = url.searchParams.get('limit');
         const limit = limitParam ? Math.min(parseInt(limitParam, 10), 10000) : 10000;
@@ -338,7 +755,7 @@ export default {
         return new Response(JSON.stringify(results), { status: 200, headers: corsHeaders });
       }
 
-      // 6. Detainees: Master-Detail by ID (Viewer+)
+      // 9. Detainees: Master-Detail by ID (Viewer+)
       if (path.startsWith('/api/detainees/') && method === 'GET') {
         const detaineeId = path.split('/api/detainees/')[1];
         if (!detaineeId) {
@@ -385,7 +802,137 @@ export default {
         }), { status: 200, headers: corsHeaders });
       }
 
-      // 7. Stats: Server-side SQL Aggregations (Viewer+)
+      // 9b. Detainees: Update Detainee & Detention In-Place (Analyst+)
+      if (path.startsWith('/api/detainees/') && (method === 'PATCH' || method === 'PUT')) {
+        if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Editing detainee records requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
+        }
+
+        const detaineeId = path.split('/api/detainees/')[1];
+        if (!detaineeId) {
+          return new Response(JSON.stringify({ error: 'Detainee ID required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const body: any = await request.json();
+        const statements: D1PreparedStatement[] = [];
+
+        // 1. Detainee profile updates
+        const detaineeFields: Record<string, string> = {
+          name: 'name',
+          jacket_number: 'jacket_number',
+          country: 'country',
+          age: 'age',
+          sex: 'sex',
+          race: 'race',
+          ice_case_number: 'ice_case_number'
+        };
+
+        const detaineeUpdates: string[] = [];
+        const detaineeParams: any[] = [];
+        for (const [key, col] of Object.entries(detaineeFields)) {
+          if (body[key] !== undefined) {
+            detaineeUpdates.push(`${col} = ?`);
+            detaineeParams.push(body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null);
+          }
+        }
+
+        if (detaineeUpdates.length > 0) {
+          detaineeUpdates.push('updated_at = CURRENT_TIMESTAMP');
+          detaineeParams.push(detaineeId);
+          statements.push(
+            env.DB.prepare(
+              `UPDATE detainees SET ${detaineeUpdates.join(', ')} WHERE id = ?`
+            ).bind(...detaineeParams)
+          );
+        }
+
+        // 2. Detention stay updates
+        const detentionFields: Record<string, string> = {
+          book_date_gcj: 'book_date_gcj',
+          departure_date: 'departure_date',
+          cell: 'cell',
+          delivering_agency: 'delivering_agency'
+        };
+
+        const hasDetentionFields = Object.keys(detentionFields).some(k => body[k] !== undefined);
+        const hasCharges = body.charges !== undefined;
+
+        if (hasDetentionFields || hasCharges) {
+          // Identify target detention (explicit ID or latest stay)
+          let targetDetentionId = body.detention_id;
+          if (!targetDetentionId) {
+            const latestStay = await env.DB.prepare(
+              'SELECT id FROM detentions WHERE detainee_id = ? ORDER BY book_date_gcj DESC, created_at DESC LIMIT 1'
+            ).bind(detaineeId).first<{ id: string }>();
+            targetDetentionId = latestStay?.id;
+          }
+
+          if (targetDetentionId) {
+            if (hasDetentionFields) {
+              const detentionUpdates: string[] = [];
+              const detentionParams: any[] = [];
+              for (const [key, col] of Object.entries(detentionFields)) {
+                if (body[key] !== undefined) {
+                  detentionUpdates.push(`${col} = ?`);
+                  detentionParams.push(body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null);
+                }
+              }
+
+              if (detentionUpdates.length > 0) {
+                detentionParams.push(targetDetentionId);
+                statements.push(
+                  env.DB.prepare(
+                    `UPDATE detentions SET ${detentionUpdates.join(', ')} WHERE id = ?`
+                  ).bind(...detentionParams)
+                );
+              }
+            }
+
+            // Update charges if provided
+            if (hasCharges) {
+              statements.push(
+                env.DB.prepare('DELETE FROM charges WHERE detention_id = ?').bind(targetDetentionId)
+              );
+
+              const rawCharges: string[] = Array.isArray(body.charges)
+                ? body.charges
+                : String(body.charges || '').split(/[;\n]/).map(c => c.trim()).filter(Boolean);
+
+              for (const ch of rawCharges) {
+                statements.push(
+                  env.DB.prepare('INSERT INTO charges (detention_id, charge_description) VALUES (?, ?)').bind(targetDetentionId, ch)
+                );
+              }
+            }
+          }
+        }
+
+        // 3. Correspondence (penpal) updates
+        if (body.penpal !== undefined) {
+          const penpalVal = body.penpal !== null && String(body.penpal).trim() !== '' ? String(body.penpal).trim() : null;
+          const existingCorr = await env.DB.prepare(
+            'SELECT id FROM correspondence WHERE detainee_id = ? LIMIT 1'
+          ).bind(detaineeId).first<{ id: number }>();
+
+          if (existingCorr) {
+            statements.push(
+              env.DB.prepare('UPDATE correspondence SET penpal = ? WHERE detainee_id = ?').bind(penpalVal, detaineeId)
+            );
+          } else if (penpalVal) {
+            statements.push(
+              env.DB.prepare('INSERT INTO correspondence (detainee_id, penpal) VALUES (?, ?)').bind(detaineeId, penpalVal)
+            );
+          }
+        }
+
+        if (statements.length > 0) {
+          await env.DB.batch(statements);
+        }
+
+        return new Response(JSON.stringify({ success: true, detaineeId }), { status: 200, headers: corsHeaders });
+      }
+
+      // 10. Stats: Server-side SQL Aggregations (Viewer+)
       if (path === '/api/stats' && method === 'GET') {
         const today = new Date().toISOString().split('T')[0];
 
@@ -418,6 +965,113 @@ export default {
           SELECT COUNT(DISTINCT detainee_id) as c FROM correspondence
           WHERE penpal IS NOT NULL AND TRIM(penpal) != ''
         `).first<{ c: number }>())?.c ?? 0;
+
+        // Metric 1: Removed in last 6 months (Distinct departed detainees)
+        const removedLast6MonthsRes = await env.DB.prepare(`
+          SELECT COUNT(DISTINCT detainee_id) as c FROM detentions
+          WHERE departure_date IS NOT NULL 
+            AND TRIM(departure_date) != '' 
+            AND LOWER(departure_date) NOT IN ('present', 'today', 'ongoing')
+            AND departure_date >= date('now', '-6 months')
+            AND departure_date <= ?
+        `).bind(today).first<{ c: number }>();
+        const removedLast6Months = removedLast6MonthsRes?.c ?? 0;
+
+        // Metric 1b: Removals broken down by month (last 6 months)
+        const removalsByMonthRaw = (await env.DB.prepare(`
+          SELECT 
+            substr(departure_date, 1, 7) as month,
+            COUNT(DISTINCT detainee_id) as count
+          FROM detentions
+          WHERE departure_date IS NOT NULL 
+            AND TRIM(departure_date) != '' 
+            AND LOWER(departure_date) NOT IN ('present', 'today', 'ongoing')
+            AND departure_date >= date('now', '-6 months')
+            AND departure_date <= ?
+          GROUP BY month
+          ORDER BY month ASC
+        `).bind(today).all<{ month: string; count: number }>()).results || [];
+
+        // Metric 2: Average new per day per month (Intake velocity from detentions)
+        const intakeVelocityRaw = (await env.DB.prepare(`
+          SELECT 
+            substr(book_date_gcj, 1, 7) as month,
+            COUNT(*) as total,
+            COUNT(DISTINCT substr(book_date_gcj, 1, 10)) as active_days
+          FROM detentions
+          WHERE book_date_gcj IS NOT NULL 
+            AND TRIM(book_date_gcj) != ''
+            AND book_date_gcj >= date('now', '-6 months')
+            AND book_date_gcj <= ?
+          GROUP BY month
+          ORDER BY month ASC
+        `).bind(today).all<{ month: string; total: number; active_days: number }>()).results || [];
+
+        const intakeVelocity = intakeVelocityRaw.map(r => ({
+          month: r.month,
+          total: r.total,
+          avgPerDay: Number(((r.total / Math.max(r.active_days || 1, 1))).toFixed(1))
+        }));
+
+        // Metric 3: Stats by age group (from normalized detainees)
+        const ageDistributionRaw = (await env.DB.prepare(`
+          SELECT 
+            CASE 
+              WHEN age IS NULL OR TRIM(age) = '' OR CAST(age AS INT) <= 0 THEN 'Unknown'
+              WHEN CAST(age AS INT) < 18 THEN 'Under 18'
+              WHEN CAST(age AS INT) BETWEEN 18 AND 25 THEN '18–25'
+              WHEN CAST(age AS INT) BETWEEN 26 AND 35 THEN '26–35'
+              WHEN CAST(age AS INT) BETWEEN 36 AND 50 THEN '36–50'
+              WHEN CAST(age AS INT) >= 51 THEN '51+'
+              ELSE 'Unknown'
+            END as age_group,
+            COUNT(*) as count
+          FROM detainees
+          GROUP BY age_group
+          ORDER BY 
+            CASE age_group
+              WHEN 'Under 18' THEN 1
+              WHEN '18–25' THEN 2
+              WHEN '26–35' THEN 3
+              WHEN '36–50' THEN 4
+              WHEN '51+' THEN 5
+              ELSE 6
+            END
+        `).all<{ age_group: string; count: number }>()).results || [];
+
+        const totalAgeCount = ageDistributionRaw.reduce((acc, curr) => acc + curr.count, 0) || 1;
+        const ageDistribution = ageDistributionRaw.map(r => ({
+          group: r.age_group,
+          count: r.count,
+          percentage: Number(((r.count / totalAgeCount) * 100).toFixed(1))
+        }));
+
+        // Metric 4: Stats by origin (country from normalized detainees)
+        const allCountriesRaw = (await env.DB.prepare(`
+          SELECT 
+            COALESCE(NULLIF(TRIM(country), ''), 'Unknown') as country, 
+            COUNT(*) as count
+          FROM detainees
+          GROUP BY country
+          ORDER BY count DESC
+        `).all<{ country: string; count: number }>()).results || [];
+
+        const totalOriginCount = allCountriesRaw.reduce((acc, curr) => acc + curr.count, 0) || 1;
+        const topOrigins = allCountriesRaw.slice(0, 5);
+        const otherOriginsCount = allCountriesRaw.slice(5).reduce((acc, curr) => acc + curr.count, 0);
+
+        const originDistribution = topOrigins.map(r => ({
+          country: r.country,
+          count: r.count,
+          percentage: Number(((r.count / totalOriginCount) * 100).toFixed(1))
+        }));
+        if (otherOriginsCount > 0) {
+          originDistribution.push({
+            country: 'Other',
+            count: otherOriginsCount,
+            percentage: Number(((otherOriginsCount / totalOriginCount) * 100).toFixed(1))
+          });
+        }
 
         // Top countries
         const topCountries = (await env.DB.prepare(`
@@ -462,6 +1116,11 @@ export default {
           currentCount: activeCustody,
           releasedCount: releasedCustody,
           withPenpalCount: penpalCount,
+          removedLast6Months,
+          removalsByMonth: removalsByMonthRaw,
+          intakeVelocity,
+          ageDistribution,
+          originDistribution,
           topCountries: topCountries.map(r => [r.country, r.count]),
           topAgencies: topAgencies.map(r => [r.agency, r.count]),
           sexDistribution: sexDistribution.map(r => [r.sex, r.count]),
@@ -469,7 +1128,46 @@ export default {
         }), { status: 200, headers: corsHeaders });
       }
 
-      // 8. Batch Ingest & Relational Normalization (Analyst+)
+      // 10b. Pre-Flight Analysis for Curation & Deduplication (Analyst+)
+      if (path === '/api/records/analyze' && method === 'POST') {
+        if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Analysis requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
+        }
+
+        const body: any = await request.json();
+        const { category, rows } = body;
+
+        if (!category || !rows || !Array.isArray(rows)) {
+          return new Response(JSON.stringify({ error: 'Category and rows array required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const analysis = await analyzeSpreadsheetRows(env.DB, category, rows);
+        return new Response(JSON.stringify(analysis), { status: 200, headers: corsHeaders });
+      }
+
+      // 10c. Curated Ingestion Commit (Analyst+)
+      if (path === '/api/records/commit' && method === 'POST') {
+        if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Ingestion requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
+        }
+
+        const body: any = await request.json();
+        const { category, cleanRows, curatedDecisions } = body;
+
+        if (!category || !Array.isArray(cleanRows) || !Array.isArray(curatedDecisions)) {
+          return new Response(JSON.stringify({ error: 'category, cleanRows, and curatedDecisions arrays are required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const result = await commitCuratedIngestion(env.DB, {
+          category,
+          cleanRows,
+          curatedDecisions
+        });
+
+        return new Response(JSON.stringify(result), { status: 200, headers: corsHeaders });
+      }
+
+      // 11. Batch Ingest & Relational Normalization (Analyst+)
       if (path === '/api/records/batch' && method === 'POST') {
         if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
           return new Response(JSON.stringify({ error: 'Forbidden: Ingestion requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
@@ -592,7 +1290,7 @@ export default {
         return new Response(JSON.stringify({ success: true, count: rows.length }), { status: 200, headers: corsHeaders });
       }
 
-      // 9. Records: Clear Database (Admin only)
+      // 12. Records: Clear Database (Admin only)
       if (path === '/api/records' && method === 'DELETE') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to reset database' }), { status: 403, headers: corsHeaders });
@@ -609,7 +1307,7 @@ export default {
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
       }
 
-      // 10. Records: Delete By Category (Admin only - fully cascades across normalized tables)
+      // 13. Records: Delete By Category (Admin only - fully cascades across normalized tables)
       if (path.startsWith('/api/records/category/') && method === 'DELETE') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to delete category records' }), { status: 403, headers: corsHeaders });
@@ -649,7 +1347,7 @@ export default {
         return new Response(JSON.stringify({ success: true, category }), { status: 200, headers: corsHeaders });
       }
 
-      // 11. Maintenance: Run 1-Year Retention Purge & Rollup (Admin only)
+      // 14. Maintenance: Run 1-Year Retention Purge & Rollup (Admin only)
       if (path === '/api/maintenance/purge' && method === 'POST') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to trigger retention purge' }), { status: 403, headers: corsHeaders });
@@ -661,7 +1359,8 @@ export default {
       return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers: corsHeaders });
 
     } catch (err: any) {
-      return new Response(JSON.stringify({ error: 'Internal Server Error', details: err.message }), { status: 500, headers: corsHeaders });
+      console.error('API Error:', err);
+      return new Response(JSON.stringify({ error: 'An unexpected internal error occurred.' }), { status: 500, headers: corsHeaders });
     }
   }
 };

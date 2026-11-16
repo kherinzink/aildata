@@ -49,10 +49,127 @@ export interface DashboardStats {
   currentCount: number;
   releasedCount: number;
   withPenpalCount: number;
+  removedLast6Months?: number;
+  removalsByMonth?: { month: string; count: number }[];
+  intakeVelocity?: { month: string; total: number; avgPerDay: number }[];
+  ageDistribution?: { group: string; count: number; percentage: number }[];
+  originDistribution?: { country: string; count: number; percentage: number }[];
   topCountries: [string, number][];
   topAgencies: [string, number][];
   sexDistribution: [string, number][];
   rollups: any[];
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: 'viewer' | 'analyst' | 'admin';
+  status: 'active' | 'suspended';
+  created_at: string;
+  last_login?: string | null;
+  invite_expires_at?: string | null;
+  is_pending_invite: number | boolean;
+  failed_attempts: number;
+  locked_until?: string | null;
+  is_locked: number | boolean;
+}
+
+export interface FieldDiff {
+  field: string;
+  label: string;
+  existing: string | null;
+  incoming: string | null;
+  status: 'identical' | 'added' | 'changed' | 'removed';
+}
+
+export interface ExistingDetaineeRef {
+  id: string;
+  jacket_number: string | null;
+  name: string | null;
+  age: string | null;
+  race: string | null;
+  sex: string | null;
+  country: string | null;
+  ice_case_number: string | null;
+}
+
+export interface ExistingDetentionRef {
+  id: string;
+  detainee_id: string;
+  book_date_gcj: string | null;
+  departure_date: string | null;
+  cell: string | null;
+  days_in_gcj: string | null;
+  delivering_agency: string | null;
+  charges_summary?: string;
+}
+
+export interface FlaggedRecord {
+  id: string;
+  rowIndex: number;
+  matchType: 'EXACT_DUPLICATE' | 'STAY_UPDATE' | 'REPEAT_BOOKING' | 'AMBIGUOUS_MATCH' | 'KEY_CONFLICT';
+  severity: 'info' | 'warning' | 'danger';
+  reason: string;
+  suggestedAction: 'skip' | 'merge' | 'create_new';
+  existingDetainee: ExistingDetaineeRef;
+  existingDetention?: ExistingDetentionRef | null;
+  existingCharges: string[];
+  incomingDetainee: Record<string, any>;
+  incomingDetention: Record<string, any>;
+  incomingCharges: string[];
+  incomingLegal: Record<string, any>;
+  incomingCorrespondence: Record<string, any>;
+  rawJson: string;
+  diffs: FieldDiff[];
+}
+
+export interface CleanRecord {
+  rowIndex: number;
+  normalized: any;
+  rawJson: string;
+}
+
+export interface IngestionAnalysisResult {
+  summary: {
+    totalRows: number;
+    cleanCount: number;
+    flaggedCount: number;
+    exactDuplicatesCount: number;
+    stayUpdatesCount: number;
+    repeatBookingsCount: number;
+    ambiguousCount: number;
+    conflictsCount: number;
+  };
+  cleanRows: CleanRecord[];
+  flaggedItems: FlaggedRecord[];
+}
+
+export interface CuratedDecision {
+  id: string;
+  rowIndex: number;
+  action: 'merge' | 'create_new' | 'skip';
+  chosenSource: 'existing' | 'incoming' | 'custom';
+  targetDetaineeId?: string;
+  targetDetentionId?: string;
+  detaineeOverrides?: Record<string, string | null>;
+  detentionOverrides?: Record<string, string | null>;
+  incomingRow: Record<string, any>;
+}
+
+export interface IngestionCommitPayload {
+  category: string;
+  cleanRows: CleanRecord[];
+  curatedDecisions: CuratedDecision[];
+}
+
+export interface IngestionCommitResult {
+  success: boolean;
+  insertedDetainees: number;
+  updatedDetainees: number;
+  insertedDetentions: number;
+  updatedDetentions: number;
+  skippedRows: number;
+  totalProcessed: number;
 }
 
 const API_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://aildata.khanis.workers.dev';
@@ -209,6 +326,73 @@ export function logoutUser() {
   storageRemove('aildata_user_role');
 }
 
+export async function getAdminUsers(): Promise<AdminUser[]> {
+  const res = await apiFetch(`${API_URL}/api/admin/users`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch user list');
+  }
+  const data = await res.json();
+  return data.users || [];
+}
+
+export async function updateUserRole(userId: string, role: 'viewer' | 'analyst' | 'admin'): Promise<{ id: string; email: string; role: string }> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/role`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to update user role');
+  return data.user;
+}
+
+export async function updateUserStatus(userId: string, status: 'active' | 'suspended'): Promise<{ id: string; email: string; status: string }> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to update user status');
+  return data.user;
+}
+
+export async function unlockUserAccount(userId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/unlock`, {
+    method: 'POST'
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to unlock user account');
+}
+
+export async function reissueUserInvite(userId: string): Promise<{ inviteToken: string; email: string; role: string; expiresAt: string }> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/reset-invite`, {
+    method: 'POST'
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to re-issue invitation link');
+  return data;
+}
+
+export async function resetUserPasswordDirect(userId: string, password: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}/password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to reset user password');
+}
+
+export async function deleteUserAccount(userId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/admin/users/${userId}`, {
+    method: 'DELETE'
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+}
+
 export async function initializeDatabase() {
   // Connected to Cloudflare D1 Edge Worker API
 }
@@ -235,6 +419,28 @@ export async function insertBatchRecords(category: string, rows: Record<string, 
   return rows.length;
 }
 
+export async function analyzeBatchRecords(category: string, rows: Record<string, any>[]): Promise<IngestionAnalysisResult> {
+  const res = await apiFetch(`${API_URL}/api/records/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category, rows })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to analyze records');
+  return data;
+}
+
+export async function commitCuratedBatch(payload: IngestionCommitPayload): Promise<IngestionCommitResult> {
+  const res = await apiFetch(`${API_URL}/api/records/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to commit curated records');
+  return data;
+}
+
 export async function getRecords(category?: string): Promise<DynamicRecord[]> {
   const url = category ? `${API_URL}/api/records?category=${encodeURIComponent(category)}` : `${API_URL}/api/records`;
   const res = await apiFetch(url);
@@ -258,6 +464,17 @@ export async function getDetaineeDetail(id: string): Promise<DetaineeDetail> {
   const res = await apiFetch(`${API_URL}/api/detainees/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error('Failed to fetch detainee detail');
   return await res.json();
+}
+
+export async function updateDetainee(id: string, updates: Record<string, any>): Promise<any> {
+  const res = await apiFetch(`${API_URL}/api/detainees/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to update detainee record');
+  return data;
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {

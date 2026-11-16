@@ -1,7 +1,15 @@
 import React, { useState, useMemo } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Platform, ScrollView } from 'react-native';
 import * as XLSX from 'xlsx';
-import { insertBatchRecords } from '../services/dataService';
+import {
+  insertBatchRecords,
+  analyzeBatchRecords,
+  commitCuratedBatch,
+  FlaggedRecord,
+  CleanRecord,
+  IngestionCommitResult
+} from '../services/dataService';
+import { IngestionReviewModal } from '../components/IngestionReviewModal';
 
 interface ImportFileViewProps {
   onImportComplete: () => void;
@@ -61,6 +69,14 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
   // Multi-sheet selection state
   const [fileData, setFileData] = useState<{ workbook: XLSX.WorkBook; fileName: string } | null>(null);
   const [sheetSelections, setSheetSelections] = useState<{ [sheetName: string]: boolean }>({});
+
+  // Curation Review Modal State
+  const [reviewModalVisible, setReviewModalVisible] = useState(false);
+  const [reviewData, setReviewData] = useState<{
+    category: string;
+    cleanRows: CleanRecord[];
+    flaggedItems: FlaggedRecord[];
+  } | null>(null);
 
   const handleWebFileChange = async (event: any) => {
     const file = event.target.files?.[0];
@@ -137,14 +153,13 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
     });
   }, [fileData, sheetSelections]);
 
-  const handleConfirmImport = async () => {
+  const handleStartIngestion = async () => {
     if (!fileData) return;
 
     setLoading(true);
-    setStatusMessage('Batch importing selected sheets...');
+    setStatusMessage('Running pre-flight deduplication & entity resolution analysis...');
 
     try {
-      let totalImported = 0;
       for (const [sheetName, isSelected] of Object.entries(sheetSelections)) {
         if (!isSelected) continue;
 
@@ -169,21 +184,53 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
           }
         }
 
-        if (validRows.length > 0) {
-          const cleanCategory = sheetName.replace(/['#\\/]/g, '_');
-          const count = await insertBatchRecords(`import_${cleanCategory}`, validRows);
-          totalImported += count;
+        if (validRows.length === 0) continue;
+
+        const cleanCategory = `import_${sheetName.replace(/['#\\/]/g, '_')}`;
+        setStatusMessage(`Analyzing ${validRows.length} rows against existing database records...`);
+        const analysis = await analyzeBatchRecords(cleanCategory, validRows);
+
+        if (analysis.flaggedItems.length > 0) {
+          // Found duplicate / conflicting records requiring curation!
+          setReviewData({
+            category: cleanCategory,
+            cleanRows: analysis.cleanRows,
+            flaggedItems: analysis.flaggedItems
+          });
+          setReviewModalVisible(true);
+          setLoading(false);
+          setStatusMessage(null);
+          return; // Pause execution for analyst review
+        } else {
+          // All rows are clean new records! Commit directly
+          setStatusMessage(`Committing ${analysis.cleanRows.length} clean new records...`);
+          const result = await commitCuratedBatch({
+            category: cleanCategory,
+            cleanRows: analysis.cleanRows,
+            curatedDecisions: []
+          });
+
+          setStatusMessage(`Successfully imported ${result.insertedDetainees} new detainees from ${fileData.fileName}!`);
+          setFileData(null);
+          onImportComplete();
+          return;
         }
       }
-
-      setStatusMessage(`Successfully batch imported ${totalImported} valid records from ${fileData.fileName}!`);
-      setFileData(null);
-      onImportComplete();
     } catch (e: any) {
-      setStatusMessage(`Error during batch import: ${e.message}`);
+      setStatusMessage(`Error during ingestion: ${e.message}`);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleReviewCommitSuccess = (result: IngestionCommitResult) => {
+    setReviewModalVisible(false);
+    setReviewData(null);
+    setFileData(null);
+    setStatusMessage(
+      `✓ Ingestion Complete: ${result.insertedDetainees} new detainees inserted, ${result.updatedDetainees} updated, ${result.insertedDetentions} stays recorded, ${result.skippedRows} duplicates skipped.`
+    );
+    onImportComplete();
   };
 
   return (
@@ -271,10 +318,10 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
               <TouchableOpacity 
                 style={[styles.importButton, previews.length === 0 && styles.disabledButton]} 
                 disabled={previews.length === 0}
-                onPress={handleConfirmImport}
+                onPress={handleStartIngestion}
               >
                 <Text style={styles.importButtonText}>
-                  Batch Ingest Selected ({previews.reduce((acc, p) => acc + p.validRowsCount, 0)} Rows)
+                  Analyze & Ingest Selected ({previews.reduce((acc, p) => acc + p.validRowsCount, 0)} Rows)
                 </Text>
               </TouchableOpacity>
             </View>
@@ -292,6 +339,17 @@ export function ImportFileView({ onImportComplete }: ImportFileViewProps) {
           <View style={styles.statusBox}>
             <Text style={styles.statusText}>{statusMessage}</Text>
           </View>
+        )}
+
+        {reviewData && (
+          <IngestionReviewModal
+            visible={reviewModalVisible}
+            category={reviewData.category}
+            cleanRows={reviewData.cleanRows}
+            flaggedItems={reviewData.flaggedItems}
+            onClose={() => setReviewModalVisible(false)}
+            onCommitSuccess={handleReviewCommitSuccess}
+          />
         )}
       </View>
     </ScrollView>
