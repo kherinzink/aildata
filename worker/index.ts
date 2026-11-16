@@ -802,6 +802,136 @@ export default {
         }), { status: 200, headers: corsHeaders });
       }
 
+      // 9b. Detainees: Update Detainee & Detention In-Place (Analyst+)
+      if (path.startsWith('/api/detainees/') && (method === 'PATCH' || method === 'PUT')) {
+        if (authUser.role !== 'admin' && authUser.role !== 'analyst') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Editing detainee records requires analyst or admin permissions' }), { status: 403, headers: corsHeaders });
+        }
+
+        const detaineeId = path.split('/api/detainees/')[1];
+        if (!detaineeId) {
+          return new Response(JSON.stringify({ error: 'Detainee ID required' }), { status: 400, headers: corsHeaders });
+        }
+
+        const body: any = await request.json();
+        const statements: D1PreparedStatement[] = [];
+
+        // 1. Detainee profile updates
+        const detaineeFields: Record<string, string> = {
+          name: 'name',
+          jacket_number: 'jacket_number',
+          country: 'country',
+          age: 'age',
+          sex: 'sex',
+          race: 'race',
+          ice_case_number: 'ice_case_number'
+        };
+
+        const detaineeUpdates: string[] = [];
+        const detaineeParams: any[] = [];
+        for (const [key, col] of Object.entries(detaineeFields)) {
+          if (body[key] !== undefined) {
+            detaineeUpdates.push(`${col} = ?`);
+            detaineeParams.push(body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null);
+          }
+        }
+
+        if (detaineeUpdates.length > 0) {
+          detaineeUpdates.push('updated_at = CURRENT_TIMESTAMP');
+          detaineeParams.push(detaineeId);
+          statements.push(
+            env.DB.prepare(
+              `UPDATE detainees SET ${detaineeUpdates.join(', ')} WHERE id = ?`
+            ).bind(...detaineeParams)
+          );
+        }
+
+        // 2. Detention stay updates
+        const detentionFields: Record<string, string> = {
+          book_date_gcj: 'book_date_gcj',
+          departure_date: 'departure_date',
+          cell: 'cell',
+          delivering_agency: 'delivering_agency'
+        };
+
+        const hasDetentionFields = Object.keys(detentionFields).some(k => body[k] !== undefined);
+        const hasCharges = body.charges !== undefined;
+
+        if (hasDetentionFields || hasCharges) {
+          // Identify target detention (explicit ID or latest stay)
+          let targetDetentionId = body.detention_id;
+          if (!targetDetentionId) {
+            const latestStay = await env.DB.prepare(
+              'SELECT id FROM detentions WHERE detainee_id = ? ORDER BY book_date_gcj DESC, created_at DESC LIMIT 1'
+            ).bind(detaineeId).first<{ id: string }>();
+            targetDetentionId = latestStay?.id;
+          }
+
+          if (targetDetentionId) {
+            if (hasDetentionFields) {
+              const detentionUpdates: string[] = [];
+              const detentionParams: any[] = [];
+              for (const [key, col] of Object.entries(detentionFields)) {
+                if (body[key] !== undefined) {
+                  detentionUpdates.push(`${col} = ?`);
+                  detentionParams.push(body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null);
+                }
+              }
+
+              if (detentionUpdates.length > 0) {
+                detentionParams.push(targetDetentionId);
+                statements.push(
+                  env.DB.prepare(
+                    `UPDATE detentions SET ${detentionUpdates.join(', ')} WHERE id = ?`
+                  ).bind(...detentionParams)
+                );
+              }
+            }
+
+            // Update charges if provided
+            if (hasCharges) {
+              statements.push(
+                env.DB.prepare('DELETE FROM charges WHERE detention_id = ?').bind(targetDetentionId)
+              );
+
+              const rawCharges: string[] = Array.isArray(body.charges)
+                ? body.charges
+                : String(body.charges || '').split(/[;\n]/).map(c => c.trim()).filter(Boolean);
+
+              for (const ch of rawCharges) {
+                statements.push(
+                  env.DB.prepare('INSERT INTO charges (detention_id, charge_description) VALUES (?, ?)').bind(targetDetentionId, ch)
+                );
+              }
+            }
+          }
+        }
+
+        // 3. Correspondence (penpal) updates
+        if (body.penpal !== undefined) {
+          const penpalVal = body.penpal !== null && String(body.penpal).trim() !== '' ? String(body.penpal).trim() : null;
+          const existingCorr = await env.DB.prepare(
+            'SELECT id FROM correspondence WHERE detainee_id = ? LIMIT 1'
+          ).bind(detaineeId).first<{ id: number }>();
+
+          if (existingCorr) {
+            statements.push(
+              env.DB.prepare('UPDATE correspondence SET penpal = ? WHERE detainee_id = ?').bind(penpalVal, detaineeId)
+            );
+          } else if (penpalVal) {
+            statements.push(
+              env.DB.prepare('INSERT INTO correspondence (detainee_id, penpal) VALUES (?, ?)').bind(detaineeId, penpalVal)
+            );
+          }
+        }
+
+        if (statements.length > 0) {
+          await env.DB.batch(statements);
+        }
+
+        return new Response(JSON.stringify({ success: true, detaineeId }), { status: 200, headers: corsHeaders });
+      }
+
       // 10. Stats: Server-side SQL Aggregations (Viewer+)
       if (path === '/api/stats' && method === 'GET') {
         const today = new Date().toISOString().split('T')[0];

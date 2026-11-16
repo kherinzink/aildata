@@ -466,6 +466,17 @@ export async function getDetaineeDetail(id: string): Promise<DetaineeDetail> {
   return await res.json();
 }
 
+export async function updateDetainee(id: string, updates: Record<string, any>): Promise<any> {
+  const res = await apiFetch(`${API_URL}/api/detainees/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to update detainee record');
+  return data;
+}
+
 export async function getDashboardStats(): Promise<DashboardStats> {
   const res = await apiFetch(`${API_URL}/api/stats`);
   if (!res.ok) throw new Error('Failed to fetch dashboard stats');

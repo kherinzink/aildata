@@ -1,11 +1,24 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { StyleSheet, Text, View, TextInput, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { DynamicRecord, getDetainees, DetaineeSummary } from '../services/dataService';
+import { DynamicRecord, getDetainees, DetaineeSummary, updateDetainee } from '../services/dataService';
 import { DetaineeDetailModal, DetaineeDetailRecord } from '../components/DetaineeDetailModal';
 
 interface SpreadsheetViewProps {
   records: DynamicRecord[];
 }
+
+const COLUMN_FIELD_MAP: Record<string, string> = {
+  Name: 'name',
+  'Jacket #': 'jacket_number',
+  Country: 'country',
+  Age: 'age',
+  Sex: 'sex',
+  'Book Date': 'book_date_gcj',
+  'Departure Date': 'departure_date',
+  Agency: 'delivering_agency',
+  Charges: 'charges',
+  Penpal: 'penpal'
+};
 
 function formatCell(val: any): string {
   if (val === null || val === undefined) return '';
@@ -36,6 +49,16 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   // Detainee Modal state
   const [selectedDetainee, setSelectedDetainee] = useState<DetaineeDetailRecord | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+
+  // Inline cell editing state
+  const [editingCell, setEditingCell] = useState<{
+    rowId: string;
+    field: string;
+    value: string;
+    originalValue: string;
+  } | null>(null);
+  const [savingCellKey, setSavingCellKey] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Fetch normalized detainees
   const loadNormalizedDetainees = async () => {
@@ -186,6 +209,84 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     setCurrentPage(1);
   };
 
+  const handleCellClick = (row: any, col: string, val: string) => {
+    if (selectedDataset !== 'normalized') return;
+    setEditingCell({
+      rowId: row.id,
+      field: col,
+      value: val === '—' || val === 'In Custody' ? '' : val,
+      originalValue: val
+    });
+  };
+
+  const handleCancelCell = () => {
+    setEditingCell(null);
+  };
+
+  const handleSaveCell = async () => {
+    if (!editingCell) return;
+    const { rowId, field, value, originalValue } = editingCell;
+    const trimmed = value.trim();
+
+    if (trimmed === originalValue.trim()) {
+      setEditingCell(null);
+      return;
+    }
+
+    const cellKey = `${rowId}:${field}`;
+    const fieldKey = COLUMN_FIELD_MAP[field] || field;
+    setSavingCellKey(cellKey);
+    setEditingCell(null);
+
+    // Optimistically update local normalizedDetainees state
+    setNormalizedDetainees(prev =>
+      prev.map(d => {
+        if (d.id !== rowId) return d;
+        const updated = { ...d };
+        if (fieldKey === 'name') updated.name = trimmed;
+        else if (fieldKey === 'jacket_number') updated.jacket_number = trimmed;
+        else if (fieldKey === 'country') updated.country = trimmed;
+        else if (fieldKey === 'age') updated.age = trimmed;
+        else if (fieldKey === 'sex') updated.sex = trimmed;
+        else if (fieldKey === 'book_date_gcj') updated.book_date_gcj = trimmed;
+        else if (fieldKey === 'departure_date') updated.departure_date = trimmed;
+        else if (fieldKey === 'delivering_agency') updated.delivering_agency = trimmed;
+        else if (fieldKey === 'charges') updated.charges_summary = trimmed;
+        else if (fieldKey === 'penpal') updated.penpal = trimmed;
+        return updated;
+      })
+    );
+
+    try {
+      await updateDetainee(rowId, { [fieldKey]: trimmed });
+      setToastMessage(`✓ Saved ${field}`);
+      setTimeout(() => setToastMessage(null), 2500);
+    } catch (e: any) {
+      // Revert on failure
+      setNormalizedDetainees(prev =>
+        prev.map(d => {
+          if (d.id !== rowId) return d;
+          const reverted = { ...d };
+          if (fieldKey === 'name') reverted.name = originalValue;
+          else if (fieldKey === 'jacket_number') reverted.jacket_number = originalValue;
+          else if (fieldKey === 'country') reverted.country = originalValue;
+          else if (fieldKey === 'age') reverted.age = originalValue;
+          else if (fieldKey === 'sex') reverted.sex = originalValue;
+          else if (fieldKey === 'book_date_gcj') reverted.book_date_gcj = originalValue;
+          else if (fieldKey === 'departure_date') reverted.departure_date = originalValue;
+          else if (fieldKey === 'delivering_agency') reverted.delivering_agency = originalValue;
+          else if (fieldKey === 'charges') reverted.charges_summary = originalValue;
+          else if (fieldKey === 'penpal') reverted.penpal = originalValue;
+          return reverted;
+        })
+      );
+      setToastMessage(`⚠️ Failed to save: ${e.message}`);
+      setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setSavingCellKey(null);
+    }
+  };
+
   const handleRowClick = (row: any) => {
     if (row.__normalizedRecord) {
       const d: DetaineeSummary = row.__normalizedRecord;
@@ -308,7 +409,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
       <View style={styles.toolbar}>
         <TextInput
           style={styles.searchInput}
-          placeholder="🔍 Search entries... (Click any row to open relational drill-down)"
+          placeholder="🔍 Search entries..."
           placeholderTextColor="#888"
           value={searchQuery}
           onChangeText={handleSearchChange}
@@ -326,6 +427,20 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
           </Text>
         </View>
       </View>
+
+      {/* Inline Editing Hint Bar */}
+      {selectedDataset === 'normalized' && (
+        <View style={styles.inlineEditHintBar}>
+          <Text style={styles.inlineEditHintText}>
+            💡 Click any cell (or ✎) to edit in-place. Press <Text style={{ fontWeight: 'bold' }}>Enter</Text> or <Text style={{ fontWeight: 'bold' }}>✓</Text> to save. Click <Text style={{ fontWeight: 'bold' }}>View 🔍</Text> for full history.
+          </Text>
+          {toastMessage && (
+            <View style={styles.toastBadge}>
+              <Text style={styles.toastText}>{toastMessage}</Text>
+            </View>
+          )}
+        </View>
+      )}
 
       {/* Spreadsheet Table Grid */}
       <ScrollView horizontal contentContainerStyle={styles.horizontalScroll}>
@@ -353,24 +468,71 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
               </View>
             ) : (
               paginatedRows.map((row: any, index: number) => (
-                <TouchableOpacity 
+                <View 
                   key={row.id || index} 
                   style={[styles.row, index % 2 === 1 && styles.evenRow]}
-                  onPress={() => handleRowClick(row)}
-                  activeOpacity={0.7}
                 >
                   <View style={[styles.cell, styles.idCell]}>
                     <Text style={styles.cellText} numberOfLines={1}>{row.id}</Text>
                   </View>
-                  <View style={[styles.cell, styles.actionCell]}>
+                  <TouchableOpacity 
+                    style={[styles.cell, styles.actionCell]}
+                    onPress={() => handleRowClick(row)}
+                  >
                     <Text style={styles.viewBadge}>View 🔍</Text>
-                  </View>
-                  {columns.map(col => (
-                    <View key={col} style={[styles.cell, styles.dataCell]}>
-                      <Text style={styles.cellText} numberOfLines={2}>{String(row[col] ?? '')}</Text>
-                    </View>
-                  ))}
-                </TouchableOpacity>
+                  </TouchableOpacity>
+                  {columns.map(col => {
+                    const isEditing = editingCell?.rowId === row.id && editingCell?.field === col;
+                    const cellKey = `${row.id}:${col}`;
+                    const isSaving = savingCellKey === cellKey;
+                    const val = String(row[col] ?? '');
+
+                    if (isEditing) {
+                      return (
+                        <View key={col} style={[styles.cell, styles.dataCell, styles.editingCellContainer]}>
+                          <TextInput
+                            style={styles.inlineInput}
+                            value={editingCell.value}
+                            onChangeText={text => setEditingCell(prev => prev ? { ...prev, value: text } : null)}
+                            onSubmitEditing={handleSaveCell}
+                            autoFocus
+                            selectTextOnFocus
+                          />
+                          <View style={styles.inlineActions}>
+                            <TouchableOpacity style={styles.saveActionBtn} onPress={handleSaveCell}>
+                              <Text style={styles.saveActionText}>✓</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.cancelActionBtn} onPress={handleCancelCell}>
+                              <Text style={styles.cancelActionText}>✕</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    }
+
+                    return (
+                      <TouchableOpacity
+                        key={col}
+                        style={[
+                          styles.cell,
+                          styles.dataCell,
+                          selectedDataset === 'normalized' && styles.editableCell
+                        ]}
+                        onPress={() => handleCellClick(row, col, val)}
+                        activeOpacity={selectedDataset === 'normalized' ? 0.7 : 1}
+                      >
+                        <Text style={styles.cellText} numberOfLines={2}>
+                          {val || (selectedDataset === 'normalized' ? '—' : '')}
+                        </Text>
+                        {isSaving ? (
+                          <ActivityIndicator size="small" color="#2563eb" style={{ marginLeft: 4 }} />
+                        ) : selectedDataset === 'normalized' ? (
+                          <Text style={styles.editPencil}>✎</Text>
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               ))
             )}
           </ScrollView>
@@ -619,5 +781,85 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#0f172a',
     marginHorizontal: 8,
+  },
+  inlineEditHintBar: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#dbeafe',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  inlineEditHintText: {
+    fontSize: 12,
+    color: '#1e40af',
+  },
+  toastBadge: {
+    backgroundColor: '#10b981',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  toastText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  editableCell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  editPencil: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginLeft: 6,
+    opacity: 0.6,
+  },
+  editingCellContainer: {
+    backgroundColor: '#ffffff',
+    borderWidth: 2,
+    borderColor: '#2563eb',
+    borderRadius: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  inlineInput: {
+    flex: 1,
+    fontSize: 12,
+    color: '#0f172a',
+    padding: 0,
+    height: 28,
+  },
+  inlineActions: {
+    flexDirection: 'row',
+    gap: 4,
+    marginLeft: 4,
+  },
+  saveActionBtn: {
+    backgroundColor: '#10b981',
+    borderRadius: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  saveActionText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  cancelActionBtn: {
+    backgroundColor: '#94a3b8',
+    borderRadius: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  cancelActionText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: 'bold',
   },
 });
