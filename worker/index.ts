@@ -835,6 +835,113 @@ export default {
           WHERE penpal IS NOT NULL AND TRIM(penpal) != ''
         `).first<{ c: number }>())?.c ?? 0;
 
+        // Metric 1: Removed in last 6 months (Distinct departed detainees)
+        const removedLast6MonthsRes = await env.DB.prepare(`
+          SELECT COUNT(DISTINCT detainee_id) as c FROM detentions
+          WHERE departure_date IS NOT NULL 
+            AND TRIM(departure_date) != '' 
+            AND LOWER(departure_date) NOT IN ('present', 'today', 'ongoing')
+            AND departure_date >= date('now', '-6 months')
+            AND departure_date <= ?
+        `).bind(today).first<{ c: number }>();
+        const removedLast6Months = removedLast6MonthsRes?.c ?? 0;
+
+        // Metric 1b: Removals broken down by month (last 6 months)
+        const removalsByMonthRaw = (await env.DB.prepare(`
+          SELECT 
+            substr(departure_date, 1, 7) as month,
+            COUNT(DISTINCT detainee_id) as count
+          FROM detentions
+          WHERE departure_date IS NOT NULL 
+            AND TRIM(departure_date) != '' 
+            AND LOWER(departure_date) NOT IN ('present', 'today', 'ongoing')
+            AND departure_date >= date('now', '-6 months')
+            AND departure_date <= ?
+          GROUP BY month
+          ORDER BY month ASC
+        `).bind(today).all<{ month: string; count: number }>()).results || [];
+
+        // Metric 2: Average new per day per month (Intake velocity from detentions)
+        const intakeVelocityRaw = (await env.DB.prepare(`
+          SELECT 
+            substr(book_date_gcj, 1, 7) as month,
+            COUNT(*) as total,
+            COUNT(DISTINCT substr(book_date_gcj, 1, 10)) as active_days
+          FROM detentions
+          WHERE book_date_gcj IS NOT NULL 
+            AND TRIM(book_date_gcj) != ''
+            AND book_date_gcj >= date('now', '-6 months')
+            AND book_date_gcj <= ?
+          GROUP BY month
+          ORDER BY month ASC
+        `).bind(today).all<{ month: string; total: number; active_days: number }>()).results || [];
+
+        const intakeVelocity = intakeVelocityRaw.map(r => ({
+          month: r.month,
+          total: r.total,
+          avgPerDay: Number(((r.total / Math.max(r.active_days || 1, 1))).toFixed(1))
+        }));
+
+        // Metric 3: Stats by age group (from normalized detainees)
+        const ageDistributionRaw = (await env.DB.prepare(`
+          SELECT 
+            CASE 
+              WHEN age IS NULL OR TRIM(age) = '' OR CAST(age AS INT) <= 0 THEN 'Unknown'
+              WHEN CAST(age AS INT) < 18 THEN 'Under 18'
+              WHEN CAST(age AS INT) BETWEEN 18 AND 25 THEN '18–25'
+              WHEN CAST(age AS INT) BETWEEN 26 AND 35 THEN '26–35'
+              WHEN CAST(age AS INT) BETWEEN 36 AND 50 THEN '36–50'
+              WHEN CAST(age AS INT) >= 51 THEN '51+'
+              ELSE 'Unknown'
+            END as age_group,
+            COUNT(*) as count
+          FROM detainees
+          GROUP BY age_group
+          ORDER BY 
+            CASE age_group
+              WHEN 'Under 18' THEN 1
+              WHEN '18–25' THEN 2
+              WHEN '26–35' THEN 3
+              WHEN '36–50' THEN 4
+              WHEN '51+' THEN 5
+              ELSE 6
+            END
+        `).all<{ age_group: string; count: number }>()).results || [];
+
+        const totalAgeCount = ageDistributionRaw.reduce((acc, curr) => acc + curr.count, 0) || 1;
+        const ageDistribution = ageDistributionRaw.map(r => ({
+          group: r.age_group,
+          count: r.count,
+          percentage: Number(((r.count / totalAgeCount) * 100).toFixed(1))
+        }));
+
+        // Metric 4: Stats by origin (country from normalized detainees)
+        const allCountriesRaw = (await env.DB.prepare(`
+          SELECT 
+            COALESCE(NULLIF(TRIM(country), ''), 'Unknown') as country, 
+            COUNT(*) as count
+          FROM detainees
+          GROUP BY country
+          ORDER BY count DESC
+        `).all<{ country: string; count: number }>()).results || [];
+
+        const totalOriginCount = allCountriesRaw.reduce((acc, curr) => acc + curr.count, 0) || 1;
+        const topOrigins = allCountriesRaw.slice(0, 5);
+        const otherOriginsCount = allCountriesRaw.slice(5).reduce((acc, curr) => acc + curr.count, 0);
+
+        const originDistribution = topOrigins.map(r => ({
+          country: r.country,
+          count: r.count,
+          percentage: Number(((r.count / totalOriginCount) * 100).toFixed(1))
+        }));
+        if (otherOriginsCount > 0) {
+          originDistribution.push({
+            country: 'Other',
+            count: otherOriginsCount,
+            percentage: Number(((otherOriginsCount / totalOriginCount) * 100).toFixed(1))
+          });
+        }
+
         // Top countries
         const topCountries = (await env.DB.prepare(`
           SELECT COALESCE(NULLIF(TRIM(country), ''), 'Unknown') as country, COUNT(*) as count
@@ -878,6 +985,11 @@ export default {
           currentCount: activeCustody,
           releasedCount: releasedCustody,
           withPenpalCount: penpalCount,
+          removedLast6Months,
+          removalsByMonth: removalsByMonthRaw,
+          intakeVelocity,
+          ageDistribution,
+          originDistribution,
           topCountries: topCountries.map(r => [r.country, r.count]),
           topAgencies: topAgencies.map(r => [r.agency, r.count]),
           sexDistribution: sexDistribution.map(r => [r.sex, r.count]),

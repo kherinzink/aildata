@@ -49,6 +49,11 @@ export interface DashboardStats {
   currentCount: number;
   releasedCount: number;
   withPenpalCount: number;
+  removedLast6Months?: number;
+  removalsByMonth?: { month: string; count: number }[];
+  intakeVelocity?: { month: string; total: number; avgPerDay: number }[];
+  ageDistribution?: { group: string; count: number; percentage: number }[];
+  originDistribution?: { country: string; count: number; percentage: number }[];
   topCountries: [string, number][];
   topAgencies: [string, number][];
   sexDistribution: [string, number][];

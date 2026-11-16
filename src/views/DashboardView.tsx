@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
 import { DynamicRecord, clearDatabase, deleteCategoryRecords, registerUser, inviteUser, getDashboardStats, runRetentionPurge, DashboardStats } from '../services/dataService';
+import { BarChart, LineChart, DonutChart, HorizontalBarGauge } from '../components/Charts';
 
 interface DashboardViewProps {
   records: DynamicRecord[];
@@ -144,6 +145,54 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
   const topAgencies = serverStats ? serverStats.topAgencies : fallbackAnalytics.topAgencies;
   const sexDistribution = serverStats ? serverStats.sexDistribution : fallbackAnalytics.sexDistribution;
 
+  // Chart data: Removals in last 6 months (by month)
+  const removalsChartData = useMemo(() => {
+    if (serverStats?.removalsByMonth && serverStats.removalsByMonth.length > 0) {
+      return serverStats.removalsByMonth.map(r => ({
+        label: r.month,
+        value: r.count
+      }));
+    }
+    return [];
+  }, [serverStats]);
+
+  // Chart data: Average new bookings per day per month (Intake velocity)
+  const intakeVelocityChartData = useMemo(() => {
+    if (serverStats?.intakeVelocity && serverStats.intakeVelocity.length > 0) {
+      return serverStats.intakeVelocity.map(r => ({
+        label: r.month,
+        value: r.avgPerDay
+      }));
+    }
+    return [];
+  }, [serverStats]);
+
+  // Chart data: Age group distribution
+  const ageDistributionData = useMemo(() => {
+    if (serverStats?.ageDistribution && serverStats.ageDistribution.length > 0) {
+      return serverStats.ageDistribution.map(r => ({
+        label: r.group,
+        count: r.count,
+        percentage: r.percentage
+      }));
+    }
+    return [];
+  }, [serverStats]);
+
+  // Chart data: Origin (Country of Origin) Donut Chart
+  const originChartData = useMemo(() => {
+    if (serverStats?.originDistribution && serverStats.originDistribution.length > 0) {
+      const colors = ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#64748b'];
+      return serverStats.originDistribution.map((r, i) => ({
+        label: r.country,
+        value: r.count,
+        percentage: r.percentage,
+        color: colors[i % colors.length]
+      }));
+    }
+    return [];
+  }, [serverStats]);
+
   const handleClearDatabase = async () => {
     if (!isAdmin) {
       alert('Only administrators can clear database records.');
@@ -274,6 +323,20 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
           <Text style={styles.cardTitle}>✉️ Current with Penpals</Text>
           <Text style={[styles.cardValue, { color: '#2563eb' }]}>{penpalPercent}%</Text>
         </View>
+        <View style={[styles.card, { borderLeftColor: '#dc2626', borderLeftWidth: 4 }]}>
+          <Text style={styles.cardTitle}>🚪 Removed (Last 6 Mo)</Text>
+          <Text style={[styles.cardValue, { color: '#b91c1c' }]}>
+            {serverStats?.removedLast6Months !== undefined ? serverStats.removedLast6Months.toLocaleString() : '-'}
+          </Text>
+        </View>
+        <View style={[styles.card, { borderLeftColor: '#0284c7', borderLeftWidth: 4 }]}>
+          <Text style={styles.cardTitle}>⚡ New / Day (Intake)</Text>
+          <Text style={[styles.cardValue, { color: '#0369a1' }]}>
+            {serverStats?.intakeVelocity && serverStats.intakeVelocity.length > 0
+              ? `${serverStats.intakeVelocity[serverStats.intakeVelocity.length - 1].avgPerDay}/d`
+              : '0.0/d'}
+          </Text>
+        </View>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Storage Engine</Text>
           <Text style={styles.cardSubValue}>{storageMode}</Text>
@@ -309,6 +372,90 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
               correspondence: <Text style={styles.tableBadgeHighlight}>{serverStats?.counts?.correspondence ?? '-'}</Text>
             </Text>
           </View>
+        </View>
+      </View>
+
+      {/* Visual Relational Analytics & Trends (Charts) */}
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.mainSectionTitle}>📊 Relational Analytics & Demographic Charts</Text>
+        <Text style={styles.sectionSubtitle}>
+          Computed exclusively from normalized relational entities in Cloudflare D1.
+        </Text>
+      </View>
+
+      {/* Charts Row 1: Removals & Intake Velocity Trends */}
+      <View style={styles.rowGrid}>
+        {/* Metric 1: Removals in Last 6 Months (Bar Chart) */}
+        <View style={styles.halfSection}>
+          <View style={styles.chartTitleRow}>
+            <Text style={styles.sectionTitle}>🚪 Removed in Last 6 Months</Text>
+            <View style={[styles.kpiPill, { backgroundColor: '#fee2e2', borderColor: '#fca5a5' }]}>
+              <Text style={[styles.kpiPillText, { color: '#991b1b' }]}>
+                {serverStats?.removedLast6Months ?? 0} Departed
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.chartSubtitle}>Monthly departed detainees from normalized detentions</Text>
+          <BarChart 
+            data={removalsChartData} 
+            barColor="#ef4444" 
+            height={190} 
+          />
+        </View>
+
+        {/* Metric 2: Average New Per Day Per Month (Line Chart) */}
+        <View style={styles.halfSection}>
+          <View style={styles.chartTitleRow}>
+            <Text style={styles.sectionTitle}>📈 Average New Per Day Per Month</Text>
+            <View style={[styles.kpiPill, { backgroundColor: '#e0f2fe', borderColor: '#7dd3fc' }]}>
+              <Text style={[styles.kpiPillText, { color: '#0369a1' }]}>
+                {serverStats?.intakeVelocity && serverStats.intakeVelocity.length > 0 
+                  ? `${serverStats.intakeVelocity[serverStats.intakeVelocity.length - 1].avgPerDay}/day` 
+                  : '0.0/day'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.chartSubtitle}>Intake velocity rate calculated from normalized book_date_gcj</Text>
+          <LineChart 
+            data={intakeVelocityChartData} 
+            strokeColor="#0284c7" 
+            height={190} 
+            valueSuffix="/d"
+          />
+        </View>
+      </View>
+
+      {/* Charts Row 2: Stats by Age Group & Stats by Origin */}
+      <View style={styles.rowGrid}>
+        {/* Metric 3: Stats by Age Group (Horizontal Bar Gauge) */}
+        <View style={styles.halfSection}>
+          <View style={styles.chartTitleRow}>
+            <Text style={styles.sectionTitle}>🎂 Stats by Age Group</Text>
+            <View style={[styles.kpiPill, { backgroundColor: '#fef3c7', borderColor: '#fde68a' }]}>
+              <Text style={[styles.kpiPillText, { color: '#b45309' }]}>
+                {serverStats?.counts?.detainees ?? 0} Total
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.chartSubtitle}>Proportional age breakdown across normalized detainee profiles</Text>
+          <HorizontalBarGauge data={ageDistributionData} />
+        </View>
+
+        {/* Metric 4: Stats by Origin (Donut Chart) */}
+        <View style={styles.halfSection}>
+          <View style={styles.chartTitleRow}>
+            <Text style={styles.sectionTitle}>🌍 Stats by Origin (Country of Origin)</Text>
+            <View style={[styles.kpiPill, { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }]}>
+              <Text style={[styles.kpiPillText, { color: '#15803d' }]}>Global COO</Text>
+            </View>
+          </View>
+          <Text style={styles.chartSubtitle}>Country distribution of normalized subjects in custody</Text>
+          <DonutChart 
+            data={originChartData} 
+            size={180} 
+            centerTitle={String(serverStats?.counts?.detainees ?? 0)} 
+            centerSubtitle="DETAINEES" 
+          />
         </View>
       </View>
 
@@ -579,6 +726,43 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0',
     marginBottom: 24,
+  },
+  sectionHeaderRow: {
+    marginTop: 6,
+    marginBottom: 16,
+  },
+  mainSectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  sectionSubtitle: {
+    fontSize: 13,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  chartTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 2,
+  },
+  chartSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    marginBottom: 14,
+  },
+  kpiPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  kpiPillText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
   sectionTitle: {
     fontSize: 16,
