@@ -637,7 +637,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
                             onSubmitEditing={handleSaveCell}
                             placeholder={isDate ? 'YYYY-MM-DD' : undefined}
                             placeholderTextColor="#94a3b8"
-                            autoFocus={!isDate}
+                            autoFocus
                             selectTextOnFocus
                           />
                           {isDate && (
