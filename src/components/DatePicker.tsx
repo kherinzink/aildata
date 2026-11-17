@@ -534,6 +534,7 @@ const styles = StyleSheet.create({
   // Cell Specific Styles
   cellContainer: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#ffffff',
@@ -545,6 +546,7 @@ const styles = StyleSheet.create({
   },
   cellInput: {
     flex: 1,
+    minWidth: 0,
     fontSize: 12,
     color: '#0f172a',
     paddingVertical: 2,
@@ -552,6 +554,7 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   cellCalendarBtn: {
+    flexShrink: 0,
     padding: 3,
     marginLeft: 2,
     backgroundColor: '#eff6ff',
@@ -565,6 +568,12 @@ const styles = StyleSheet.create({
 
   // Modal Styles
   modalOverlay: {
+    position: Platform.OS === 'web' ? ('fixed' as any) : 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 999999,
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.65)',
     justifyContent: 'center',
@@ -572,6 +581,7 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   modalCard: {
+    zIndex: 1000000,
     backgroundColor: '#ffffff',
     borderRadius: 14,
     width: '100%',

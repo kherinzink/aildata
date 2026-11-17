@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TextInput, ScrollView, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { DynamicRecord, getDetainees, DetaineeSummary, updateDetainee } from '../services/dataService';
 import { DetaineeDetailModal, DetaineeDetailRecord } from '../components/DetaineeDetailModal';
-import { CellDatePicker, DatePickerInput } from '../components/DatePicker';
+import { DatePickerModal, DatePickerInput } from '../components/DatePicker';
 
 interface SpreadsheetViewProps {
   records: DynamicRecord[];
@@ -63,6 +63,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     value: string;
     originalValue: string;
   } | null>(null);
+  const [cellDatePickerVisible, setCellDatePickerVisible] = useState(false);
   const [savingCellKey, setSavingCellKey] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -262,10 +263,12 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
 
   const handleCancelCell = () => {
     setEditingCell(null);
+    setCellDatePickerVisible(false);
   };
 
   const handleSaveCell = async () => {
     if (!editingCell) return;
+    setCellDatePickerVisible(false);
     const { rowId, field, value, originalValue } = editingCell;
     const trimmed = value.trim();
 
@@ -627,29 +630,30 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
                       const isDate = isDateColumn(col);
                       return (
                         <View key={col} style={[styles.cell, styles.dataCell, styles.editingCellContainer]}>
-                          {isDate ? (
-                            <CellDatePicker
-                              value={editingCell.value}
-                              onChange={text => setEditingCell(prev => prev ? { ...prev, value: text } : null)}
-                              onSave={handleSaveCell}
-                              onCancel={handleCancelCell}
-                              autoFocus
-                            />
-                          ) : (
-                            <TextInput
-                              style={styles.inlineInput}
-                              value={editingCell.value}
-                              onChangeText={text => setEditingCell(prev => prev ? { ...prev, value: text } : null)}
-                              onSubmitEditing={handleSaveCell}
-                              autoFocus
-                              selectTextOnFocus
-                            />
+                          <TextInput
+                            style={[styles.inlineInput, isDate && styles.inlineDateInput]}
+                            value={editingCell.value}
+                            onChangeText={text => setEditingCell(prev => prev ? { ...prev, value: text } : null)}
+                            onSubmitEditing={handleSaveCell}
+                            placeholder={isDate ? 'YYYY-MM-DD' : undefined}
+                            placeholderTextColor="#94a3b8"
+                            autoFocus={!isDate}
+                            selectTextOnFocus
+                          />
+                          {isDate && (
+                            <TouchableOpacity
+                              style={styles.cellCalendarBtn}
+                              onPress={() => setCellDatePickerVisible(true)}
+                              accessibilityLabel="Open calendar date picker"
+                            >
+                              <Text style={styles.cellCalendarIcon}>📅</Text>
+                            </TouchableOpacity>
                           )}
                           <View style={styles.inlineActions}>
-                            <TouchableOpacity style={styles.saveActionBtn} onPress={handleSaveCell}>
+                            <TouchableOpacity style={styles.saveActionBtn} onPress={handleSaveCell} accessibilityLabel="Save">
                               <Text style={styles.saveActionText}>✓</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity style={styles.cancelActionBtn} onPress={handleCancelCell}>
+                            <TouchableOpacity style={styles.cancelActionBtn} onPress={handleCancelCell} accessibilityLabel="Cancel">
                               <Text style={styles.cancelActionText}>✕</Text>
                             </TouchableOpacity>
                           </View>
@@ -731,6 +735,23 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
         onClose={() => setModalVisible(false)}
         detainee={selectedDetainee}
         onDetaineeUpdated={loadNormalizedDetainees}
+      />
+
+      {/* DatePicker Modal for Inline Cell Editing */}
+      <DatePickerModal
+        visible={cellDatePickerVisible}
+        value={editingCell?.value || ''}
+        onSelect={dateStr => {
+          setEditingCell(prev => prev ? { ...prev, value: dateStr } : null);
+          setCellDatePickerVisible(false);
+        }}
+        onClose={() => setCellDatePickerVisible(false)}
+        title={editingCell ? `Select ${editingCell.field}` : 'Select Date'}
+        allowClear
+        onClear={() => {
+          setEditingCell(prev => prev ? { ...prev, value: '' } : null);
+          setCellDatePickerVisible(false);
+        }}
       />
     </View>
   );
@@ -1050,18 +1071,40 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 4,
     paddingVertical: 2,
+    minWidth: 0,
+    overflow: 'hidden',
   },
   inlineInput: {
     flex: 1,
+    minWidth: 0,
     fontSize: 12,
     color: '#0f172a',
     padding: 0,
     height: 28,
   },
+  inlineDateInput: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    letterSpacing: -0.2,
+  },
+  cellCalendarBtn: {
+    flexShrink: 0,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    marginRight: 4,
+    backgroundColor: '#eff6ff',
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  cellCalendarIcon: {
+    fontSize: 12,
+  },
   inlineActions: {
+    flexShrink: 0,
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 4,
-    marginLeft: 4,
+    marginLeft: 2,
   },
   saveActionBtn: {
     backgroundColor: '#10b981',
