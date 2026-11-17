@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { StyleSheet, Text, View, TextInput, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { DynamicRecord, getDetainees, DetaineeSummary, updateDetainee } from '../services/dataService';
 import { DetaineeDetailModal, DetaineeDetailRecord } from '../components/DetaineeDetailModal';
+import { CellDatePicker, DatePickerInput } from '../components/DatePicker';
 
 interface SpreadsheetViewProps {
   records: DynamicRecord[];
@@ -19,6 +20,11 @@ const COLUMN_FIELD_MAP: Record<string, string> = {
   Charges: 'charges',
   Penpal: 'penpal'
 };
+
+function isDateColumn(colName: string): boolean {
+  const lower = colName.toLowerCase();
+  return lower.includes('date') || lower === 'book date' || lower === 'departure date';
+}
 
 function formatCell(val: any): string {
   if (val === null || val === undefined) return '';
@@ -59,6 +65,11 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   } | null>(null);
   const [savingCellKey, setSavingCellKey] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Date Range Filter State
+  const [dateFilterField, setDateFilterField] = useState<'none' | 'book_date' | 'departure_date'>('none');
+  const [dateFilterStart, setDateFilterStart] = useState<string>('');
+  const [dateFilterEnd, setDateFilterEnd] = useState<string>('');
 
   // Fetch normalized detainees
   const loadNormalizedDetainees = async () => {
@@ -160,16 +171,46 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     return Array.from(allKeysSet);
   }, [selectedDataset, activeRows]);
 
-  // Filter and sort with numeric collation
+  // Filter and sort with numeric collation and date range filtering
   const sortedRows = useMemo(() => {
     const query = searchQuery.toLowerCase().trim();
     
-    const filtered = query === '' ? activeRows : activeRows.filter(row => {
+    let filtered = query === '' ? activeRows : activeRows.filter(row => {
       return Object.entries(row).some(([k, val]) => {
         if (k === '__rawObj' || k === '__normalizedRecord') return false;
         return String(val ?? '').toLowerCase().includes(query);
       });
     });
+
+    // Apply date range filter if enabled
+    if (dateFilterField !== 'none' && (dateFilterStart || dateFilterEnd)) {
+      filtered = filtered.filter((row: any) => {
+        let cellDate = '';
+        if (selectedDataset === 'normalized') {
+          cellDate = dateFilterField === 'book_date' ? String(row['Book Date'] || '') : String(row['Departure Date'] || '');
+        } else {
+          for (const [k, v] of Object.entries(row)) {
+            const lk = k.toLowerCase();
+            if (dateFilterField === 'book_date' && (lk.includes('book') || lk.includes('intake')) && v) {
+              cellDate = String(v);
+              break;
+            } else if (dateFilterField === 'departure_date' && (lk.includes('departure') || lk.includes('release')) && v) {
+              cellDate = String(v);
+              break;
+            }
+          }
+        }
+
+        if (!cellDate || cellDate === 'In Custody' || cellDate === 'Present') {
+          return false;
+        }
+
+        const cleanDate = cellDate.trim().substring(0, 10);
+        if (dateFilterStart && cleanDate < dateFilterStart) return false;
+        if (dateFilterEnd && cleanDate > dateFilterEnd) return false;
+        return true;
+      });
+    }
 
     if (!sortField) return filtered;
 
@@ -179,7 +220,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
       const cmp = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
       return sortAsc ? cmp : -cmp;
     });
-  }, [activeRows, searchQuery, sortField, sortAsc]);
+  }, [activeRows, searchQuery, sortField, sortAsc, dateFilterField, dateFilterStart, dateFilterEnd, selectedDataset]);
 
   // Pagination calculation
   const totalPages = Math.ceil(sortedRows.length / PAGE_SIZE) || 1;
@@ -428,6 +469,101 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
         </View>
       </View>
 
+      {/* Date Filter Bar */}
+      <View style={styles.dateFilterBar}>
+        <View style={styles.dateFilterLeft}>
+          <Text style={styles.dateFilterTitle}>📅 Date Filter:</Text>
+          <View style={styles.dateFilterPills}>
+            <TouchableOpacity
+              style={[styles.dateFilterPill, dateFilterField === 'none' && styles.dateFilterPillActive]}
+              onPress={() => {
+                setDateFilterField('none');
+                setDateFilterStart('');
+                setDateFilterEnd('');
+                setCurrentPage(1);
+              }}
+            >
+              <Text style={[styles.dateFilterPillText, dateFilterField === 'none' && styles.dateFilterPillTextActive]}>
+                Off
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.dateFilterPill, dateFilterField === 'book_date' && styles.dateFilterPillActive]}
+              onPress={() => {
+                setDateFilterField('book_date');
+                setCurrentPage(1);
+              }}
+            >
+              <Text style={[styles.dateFilterPillText, dateFilterField === 'book_date' && styles.dateFilterPillTextActive]}>
+                Book Date
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.dateFilterPill, dateFilterField === 'departure_date' && styles.dateFilterPillActive]}
+              onPress={() => {
+                setDateFilterField('departure_date');
+                setCurrentPage(1);
+              }}
+            >
+              <Text style={[styles.dateFilterPillText, dateFilterField === 'departure_date' && styles.dateFilterPillTextActive]}>
+                Departure Date
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {dateFilterField !== 'none' && (
+          <View style={styles.dateFilterInputsRow}>
+            <View style={styles.dateFilterInputItem}>
+              <Text style={styles.dateFilterInputLabel}>From:</Text>
+              <DatePickerInput
+                value={dateFilterStart}
+                onChange={d => {
+                  setDateFilterStart(d);
+                  setCurrentPage(1);
+                }}
+                placeholder="Start Date"
+                compact
+                allowClear
+                title={`Filter ${dateFilterField === 'book_date' ? 'Book Date' : 'Departure Date'} From`}
+                style={{ width: 140 }}
+              />
+            </View>
+
+            <View style={styles.dateFilterInputItem}>
+              <Text style={styles.dateFilterInputLabel}>To:</Text>
+              <DatePickerInput
+                value={dateFilterEnd}
+                onChange={d => {
+                  setDateFilterEnd(d);
+                  setCurrentPage(1);
+                }}
+                placeholder="End Date"
+                compact
+                allowClear
+                title={`Filter ${dateFilterField === 'book_date' ? 'Book Date' : 'Departure Date'} To`}
+                style={{ width: 140 }}
+              />
+            </View>
+
+            {(!!dateFilterStart || !!dateFilterEnd) && (
+              <TouchableOpacity
+                style={styles.clearDateFilterBtn}
+                onPress={() => {
+                  setDateFilterStart('');
+                  setDateFilterEnd('');
+                  setCurrentPage(1);
+                }}
+              >
+                <Text style={styles.clearDateFilterBtnText}>✕ Reset Range</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+      </View>
+
       {/* Inline Editing Hint Bar */}
       {selectedDataset === 'normalized' && (
         <View style={styles.inlineEditHintBar}>
@@ -488,16 +624,27 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
                     const val = String(row[col] ?? '');
 
                     if (isEditing) {
+                      const isDate = isDateColumn(col);
                       return (
                         <View key={col} style={[styles.cell, styles.dataCell, styles.editingCellContainer]}>
-                          <TextInput
-                            style={styles.inlineInput}
-                            value={editingCell.value}
-                            onChangeText={text => setEditingCell(prev => prev ? { ...prev, value: text } : null)}
-                            onSubmitEditing={handleSaveCell}
-                            autoFocus
-                            selectTextOnFocus
-                          />
+                          {isDate ? (
+                            <CellDatePicker
+                              value={editingCell.value}
+                              onChange={text => setEditingCell(prev => prev ? { ...prev, value: text } : null)}
+                              onSave={handleSaveCell}
+                              onCancel={handleCancelCell}
+                              autoFocus
+                            />
+                          ) : (
+                            <TextInput
+                              style={styles.inlineInput}
+                              value={editingCell.value}
+                              onChangeText={text => setEditingCell(prev => prev ? { ...prev, value: text } : null)}
+                              onSubmitEditing={handleSaveCell}
+                              autoFocus
+                              selectTextOnFocus
+                            />
+                          )}
                           <View style={styles.inlineActions}>
                             <TouchableOpacity style={styles.saveActionBtn} onPress={handleSaveCell}>
                               <Text style={styles.saveActionText}>✓</Text>
@@ -527,7 +674,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
                         {isSaving ? (
                           <ActivityIndicator size="small" color="#2563eb" style={{ marginLeft: 4 }} />
                         ) : selectedDataset === 'normalized' ? (
-                          <Text style={styles.editPencil}>✎</Text>
+                          <Text style={styles.editPencil}>{isDateColumn(col) ? '📅' : '✎'}</Text>
                         ) : null}
                       </TouchableOpacity>
                     );
@@ -583,6 +730,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
         detainee={selectedDetainee}
+        onDetaineeUpdated={loadNormalizedDetainees}
       />
     </View>
   );
@@ -645,6 +793,81 @@ const styles = StyleSheet.create({
   toolbarRight: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  dateFilterBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  dateFilterLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dateFilterTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  dateFilterPills: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  dateFilterPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  dateFilterPillActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#3b82f6',
+  },
+  dateFilterPillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  dateFilterPillTextActive: {
+    color: '#1d4ed8',
+  },
+  dateFilterInputsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  dateFilterInputItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dateFilterInputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  clearDateFilterBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  clearDateFilterBtnText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#dc2626',
   },
   searchInput: {
     flex: 1,

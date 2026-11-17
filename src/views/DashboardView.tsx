@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
 import { DynamicRecord, clearDatabase, deleteCategoryRecords, registerUser, inviteUser, getDashboardStats, runRetentionPurge, DashboardStats } from '../services/dataService';
 import { BarChart, LineChart, DonutChart, HorizontalBarGauge } from '../components/Charts';
+import { DatePickerInput, parseISODate } from '../components/DatePicker';
 
 interface DashboardViewProps {
   records: DynamicRecord[];
@@ -17,6 +18,9 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
   // Server Stats State
   const [serverStats, setServerStats] = useState<DashboardStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+
+  // Dynamic As-of Cutoff Date State
+  const [asOfDate, setAsOfDate] = useState<string>('');
 
   // Admin User Invitation State
   const [adminEmail, setAdminEmail] = useState('');
@@ -64,7 +68,7 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
     let currentCount = 0;
     let releasedCount = 0;
     let currentWithPenpalCount = 0;
-    const today = new Date();
+    const cutoffDate = asOfDate ? (parseISODate(asOfDate) || new Date()) : new Date();
 
     records.forEach(r => {
       try {
@@ -103,7 +107,7 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
           if (isNaN(depDate.getTime())) {
             isCurrent = true;
             currentCount++;
-          } else if (depDate <= today) {
+          } else if (depDate <= cutoffDate) {
             releasedCount++;
           } else {
             isCurrent = true;
@@ -133,11 +137,11 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
     const penpalPercentage = currentCount > 0 ? ((currentWithPenpalCount / currentCount) * 100).toFixed(1) : '0.0';
 
     return { topCountries, topAgencies, sexDistribution, currentCount, releasedCount, penpalPercentage };
-  }, [records]);
+  }, [records, asOfDate]);
 
-  // Unified Analytics Values (Server preferenced over client fallback)
-  const activeCount = serverStats ? serverStats.currentCount : fallbackAnalytics.currentCount;
-  const releasedCount = serverStats ? serverStats.releasedCount : fallbackAnalytics.releasedCount;
+  // Unified Analytics Values (Server preferenced unless custom as-of cutoff date is selected)
+  const activeCount = asOfDate ? fallbackAnalytics.currentCount : (serverStats ? serverStats.currentCount : fallbackAnalytics.currentCount);
+  const releasedCount = asOfDate ? fallbackAnalytics.releasedCount : (serverStats ? serverStats.releasedCount : fallbackAnalytics.releasedCount);
   const penpalPercent = serverStats 
     ? (serverStats.currentCount > 0 ? ((serverStats.withPenpalCount / serverStats.currentCount) * 100).toFixed(1) : '0.0')
     : fallbackAnalytics.penpalPercentage;
@@ -301,6 +305,27 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
       <View style={styles.titleRow}>
         <Text style={styles.title}>System Overview & Custody Analytics</Text>
         {statsLoading && <ActivityIndicator size="small" color="#2563eb" />}
+      </View>
+
+      {/* Dynamic As-Of Cutoff Date Bar */}
+      <View style={styles.cutoffBar}>
+        <View style={styles.cutoffLeft}>
+          <Text style={styles.cutoffLabel}>📅 Analytics Cutoff Date:</Text>
+          <Text style={styles.cutoffDesc}>
+            {asOfDate ? `Viewing custody metrics calculated as of ${asOfDate}` : 'Viewing live custody status (current date)'}
+          </Text>
+        </View>
+        <View style={styles.cutoffRight}>
+          <DatePickerInput
+            value={asOfDate}
+            onChange={setAsOfDate}
+            placeholder="Live / Today"
+            compact
+            allowClear
+            title="Select Analytics Cutoff Date"
+            style={{ width: 170 }}
+          />
+        </View>
       </View>
       
       {/* Top Metric Cards */}
@@ -661,12 +686,48 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    marginBottom: 20,
+    marginBottom: 16,
   },
   title: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#0f172a',
+  },
+  cutoffBar: {
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  cutoffLeft: {
+    flex: 1,
+    minWidth: 200,
+  },
+  cutoffLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1e293b',
+  },
+  cutoffDesc: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  cutoffRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   grid: {
     flexDirection: 'row',

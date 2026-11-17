@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput, SafeAreaView } from 'react-native';
 import { initializeDatabase, getTableNames, getRecords, insertRecord, getStorageMode, getAuthToken, getAuthUser, logoutUser, setUnauthorizedCallback, DynamicRecord } from './src/services/dataService';
+import { DatePickerInput, getTodayISO } from './src/components/DatePicker';
 import { SpreadsheetView } from './src/views/SpreadsheetView';
 import { DashboardView } from './src/views/DashboardView';
 import { ImportFileView } from './src/views/ImportFileView';
@@ -29,6 +30,8 @@ export default function App() {
   const [inputKey, setInputKey] = useState<string>('');
   const [inputValue, setInputValue] = useState<string>('');
   const [inputName, setInputName] = useState<string>('');
+  const [inputBookDate, setInputBookDate] = useState<string>(getTodayISO());
+  const [inputDepDate, setInputDepDate] = useState<string>('');
 
   const loadData = async () => {
     try {
@@ -63,21 +66,30 @@ export default function App() {
   };
 
   const handleAddRecord = async () => {
-    if (!inputName) return;
+    if (!inputName.trim()) return;
     if (currentUser?.role === 'viewer') {
       alert('Access denied: Viewers cannot add records.');
       return;
     }
     try {
-      await insertRecord('detainee_record', {
-        "Name (From Jail Tracker)": inputName,
-        [inputKey || "CustomField"]: inputValue || "Value",
-        "Book Date in GCJ": new Date().toISOString().split('T')[0],
+      const recordPayload: Record<string, any> = {
+        "Name (From Jail Tracker)": inputName.trim(),
+        "Book Date in GCJ": inputBookDate || getTodayISO(),
         "Delivering Agency": "Manual Entry"
-      });
+      };
+      if (inputDepDate && inputDepDate.trim()) {
+        recordPayload["Departure date (or today)"] = inputDepDate.trim();
+      }
+      if (inputKey.trim()) {
+        recordPayload[inputKey.trim()] = inputValue.trim() || "Value";
+      }
+
+      await insertRecord('detainee_record', recordPayload);
       setInputName('');
       setInputKey('');
       setInputValue('');
+      setInputBookDate(getTodayISO());
+      setInputDepDate('');
       await loadData();
       setActiveTab('spreadsheet');
     } catch (e: any) {
@@ -226,23 +238,53 @@ export default function App() {
               onChangeText={setInputName}
             />
 
+            <Text style={styles.label}>Book Date in GCJ</Text>
+            <DatePickerInput
+              value={inputBookDate}
+              onChange={setInputBookDate}
+              title="Select Booking Date"
+              placeholder="YYYY-MM-DD"
+              style={{ marginBottom: 16 }}
+            />
+
+            <Text style={styles.label}>Departure / Release Date (Optional)</Text>
+            <DatePickerInput
+              value={inputDepDate}
+              onChange={setInputDepDate}
+              title="Select Departure Date"
+              placeholder="YYYY-MM-DD (or leave blank if present)"
+              allowClear
+              style={{ marginBottom: 16 }}
+            />
+
             <Text style={styles.label}>Custom Field Key</Text>
             <TextInput
               style={styles.input}
-              placeholder="e.g. Charges, Age, Cell"
+              placeholder="e.g. Charges, Age, Cell, Decision Date"
               placeholderTextColor="#888"
               value={inputKey}
               onChangeText={setInputKey}
             />
 
             <Text style={styles.label}>Custom Field Value</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Grand Larceny"
-              placeholderTextColor="#888"
-              value={inputValue}
-              onChangeText={setInputValue}
-            />
+            {inputKey.toLowerCase().includes('date') ? (
+              <DatePickerInput
+                value={inputValue}
+                onChange={setInputValue}
+                title={`Select ${inputKey}`}
+                placeholder="YYYY-MM-DD"
+                allowClear
+                style={{ marginBottom: 16 }}
+              />
+            ) : (
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. Grand Larceny"
+                placeholderTextColor="#888"
+                value={inputValue}
+                onChangeText={setInputValue}
+              />
+            )}
 
             <TouchableOpacity style={styles.button} onPress={handleAddRecord}>
               <Text style={styles.buttonText}>Save to Database</Text>

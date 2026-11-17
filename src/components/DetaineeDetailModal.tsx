@@ -1,5 +1,7 @@
-import React from 'react';
-import { StyleSheet, Text, View, Modal, TouchableOpacity, ScrollView } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, Text, View, Modal, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import { DatePickerModal } from './DatePicker';
+import { updateDetainee } from '../services/dataService';
 
 export interface DetaineeDetailRecord {
   id?: string;
@@ -37,10 +39,75 @@ interface DetaineeDetailModalProps {
   visible: boolean;
   onClose: () => void;
   detainee: DetaineeDetailRecord | null;
+  onDetaineeUpdated?: () => void;
 }
 
-export function DetaineeDetailModal({ visible, onClose, detainee }: DetaineeDetailModalProps) {
+export function DetaineeDetailModal({ visible, onClose, detainee, onDetaineeUpdated }: DetaineeDetailModalProps) {
+  const [localDates, setLocalDates] = useState<{
+    book_date_gcj: string;
+    departure_date: string;
+    decision_date: string;
+  }>({
+    book_date_gcj: '',
+    departure_date: '',
+    decision_date: ''
+  });
+
+  const [activeDateField, setActiveDateField] = useState<null | {
+    key: 'book_date_gcj' | 'departure_date' | 'decision_date';
+    label: string;
+  }>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [savingField, setSavingField] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (detainee) {
+      setLocalDates({
+        book_date_gcj: detainee.book_date_gcj || '',
+        departure_date: detainee.departure_date || '',
+        decision_date: detainee.decision_date || ''
+      });
+      setToastMessage(null);
+    }
+  }, [detainee]);
+
   if (!detainee) return null;
+
+  const handleOpenDatePicker = (key: 'book_date_gcj' | 'departure_date' | 'decision_date', label: string) => {
+    if (!detainee.id) return;
+    setActiveDateField({ key, label });
+  };
+
+  const handleSelectDate = async (newDateStr: string) => {
+    if (!activeDateField || !detainee.id) return;
+    const { key, label } = activeDateField;
+    const prevDate = localDates[key];
+    setActiveDateField(null);
+
+    if (newDateStr === prevDate) return;
+
+    // Optimistic update
+    setLocalDates(prev => ({ ...prev, [key]: newDateStr }));
+    setSavingField(key);
+
+    try {
+      await updateDetainee(detainee.id, { [key]: newDateStr });
+      if (key === 'book_date_gcj') detainee.book_date_gcj = newDateStr;
+      if (key === 'departure_date') detainee.departure_date = newDateStr;
+      if (key === 'decision_date') detainee.decision_date = newDateStr;
+      
+      setToastMessage(`✓ Updated ${label}`);
+      setTimeout(() => setToastMessage(null), 3000);
+      onDetaineeUpdated?.();
+    } catch (e: any) {
+      // Revert on error
+      setLocalDates(prev => ({ ...prev, [key]: prevDate }));
+      setToastMessage(`⚠️ Failed to update ${label}: ${e.message}`);
+      setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setSavingField(null);
+    }
+  };
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -53,6 +120,11 @@ export function DetaineeDetailModal({ visible, onClose, detainee }: DetaineeDeta
               <Text style={styles.subtitle}>
                 Jacket: {detainee.jacket_number || 'N/A'} • ICE Case / A#: {detainee.ice_case_number || 'N/A'}
               </Text>
+              {toastMessage && (
+                <View style={styles.toastBanner}>
+                  <Text style={styles.toastText}>{toastMessage}</Text>
+                </View>
+              )}
             </View>
             <TouchableOpacity style={styles.closeButton} onPress={onClose}>
               <Text style={styles.closeButtonText}>✕</Text>
@@ -88,13 +160,43 @@ export function DetaineeDetailModal({ visible, onClose, detainee }: DetaineeDeta
               <Text style={styles.sectionTitle}>🏢 Detention & Facility History</Text>
               <View style={styles.grid}>
                 <View style={styles.field}>
-                  <Text style={styles.label}>Book Date in GCJ</Text>
-                  <Text style={styles.value}>{detainee.book_date_gcj || 'N/A'}</Text>
+                  <View style={styles.dateLabelRow}>
+                    <Text style={styles.label}>Book Date in GCJ</Text>
+                    {detainee.id && (
+                      <TouchableOpacity
+                        style={styles.dateEditBtn}
+                        onPress={() => handleOpenDatePicker('book_date_gcj', 'Booking Date')}
+                        accessibilityLabel="Change Book Date"
+                      >
+                        <Text style={styles.dateEditBtnText}>📅 Change</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <View style={styles.dateValueRow}>
+                    <Text style={styles.value}>{localDates.book_date_gcj || 'N/A'}</Text>
+                    {savingField === 'book_date_gcj' && <ActivityIndicator size="small" color="#2563eb" style={{ marginLeft: 6 }} />}
+                  </View>
                 </View>
+
                 <View style={styles.field}>
-                  <Text style={styles.label}>Departure / Release Date</Text>
-                  <Text style={styles.value}>{detainee.departure_date || 'Present / In Custody'}</Text>
+                  <View style={styles.dateLabelRow}>
+                    <Text style={styles.label}>Departure / Release Date</Text>
+                    {detainee.id && (
+                      <TouchableOpacity
+                        style={styles.dateEditBtn}
+                        onPress={() => handleOpenDatePicker('departure_date', 'Departure Date')}
+                        accessibilityLabel="Change Departure Date"
+                      >
+                        <Text style={styles.dateEditBtnText}>📅 Change</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <View style={styles.dateValueRow}>
+                    <Text style={styles.value}>{localDates.departure_date || 'Present / In Custody'}</Text>
+                    {savingField === 'departure_date' && <ActivityIndicator size="small" color="#2563eb" style={{ marginLeft: 6 }} />}
+                  </View>
                 </View>
+
                 <View style={styles.field}>
                   <Text style={styles.label}>Housing Cell</Text>
                   <Text style={styles.value}>{detainee.cell || 'N/A'}</Text>
@@ -142,8 +244,22 @@ export function DetaineeDetailModal({ visible, onClose, detainee }: DetaineeDeta
                   <Text style={styles.value}>{detainee.judge_ordered || 'N/A'}</Text>
                 </View>
                 <View style={styles.field}>
-                  <Text style={styles.label}>Decision Date</Text>
-                  <Text style={styles.value}>{detainee.decision_date || 'N/A'}</Text>
+                  <View style={styles.dateLabelRow}>
+                    <Text style={styles.label}>Decision Date</Text>
+                    {detainee.id && (
+                      <TouchableOpacity
+                        style={styles.dateEditBtn}
+                        onPress={() => handleOpenDatePicker('decision_date', 'Decision Date')}
+                        accessibilityLabel="Change Decision Date"
+                      >
+                        <Text style={styles.dateEditBtnText}>📅 Change</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <View style={styles.dateValueRow}>
+                    <Text style={styles.value}>{localDates.decision_date || 'N/A'}</Text>
+                    {savingField === 'decision_date' && <ActivityIndicator size="small" color="#2563eb" style={{ marginLeft: 6 }} />}
+                  </View>
                 </View>
                 <View style={styles.field}>
                   <Text style={styles.label}>Day Wait</Text>
@@ -186,6 +302,17 @@ export function DetaineeDetailModal({ visible, onClose, detainee }: DetaineeDeta
               </View>
             )}
           </ScrollView>
+
+          {/* Date Picker Modal for editing dates */}
+          <DatePickerModal
+            visible={activeDateField !== null}
+            value={activeDateField ? localDates[activeDateField.key] : ''}
+            onSelect={handleSelectDate}
+            onClose={() => setActiveDateField(null)}
+            title={activeDateField ? `Set ${activeDateField.label}` : 'Select Date'}
+            allowClear
+            onClear={() => handleSelectDate('')}
+          />
 
           <View style={styles.footer}>
             <TouchableOpacity style={styles.dismissButton} onPress={onClose}>
@@ -283,6 +410,44 @@ const styles = StyleSheet.create({
     color: '#64748b',
     textTransform: 'uppercase',
     marginBottom: 2,
+  },
+  dateLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  dateEditBtn: {
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  dateEditBtnText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#1d4ed8',
+  },
+  dateValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  toastBanner: {
+    marginTop: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: '#ecfdf5',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#a7f3d0',
+    alignSelf: 'flex-start',
+  },
+  toastText: {
+    fontSize: 12,
+    color: '#065f46',
+    fontWeight: '600',
   },
   value: {
     fontSize: 14,

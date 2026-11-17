@@ -925,6 +925,30 @@ export default {
           }
         }
 
+        // 4. Legal Proceedings (decision_date) updates
+        if (body.decision_date !== undefined) {
+          const decVal = body.decision_date !== null && String(body.decision_date).trim() !== '' ? String(body.decision_date).trim() : null;
+          const existingProc = await env.DB.prepare(
+            'SELECT lp.id FROM legal_proceedings lp JOIN detentions d ON lp.detention_id = d.id WHERE d.detainee_id = ? LIMIT 1'
+          ).bind(detaineeId).first<{ id: number }>();
+
+          if (existingProc) {
+            statements.push(
+              env.DB.prepare('UPDATE legal_proceedings SET decision_date = ? WHERE id = ?').bind(decVal, existingProc.id)
+            );
+          } else {
+            const detentionForProc = await env.DB.prepare(
+              'SELECT id FROM detentions WHERE detainee_id = ? ORDER BY book_date_gcj DESC, created_at DESC LIMIT 1'
+            ).bind(detaineeId).first<{ id: string }>();
+
+            if (detentionForProc && decVal) {
+              statements.push(
+                env.DB.prepare('INSERT INTO legal_proceedings (detention_id, decision_date) VALUES (?, ?)').bind(detentionForProc.id, decVal)
+              );
+            }
+          }
+        }
+
         if (statements.length > 0) {
           await env.DB.batch(statements);
         }
