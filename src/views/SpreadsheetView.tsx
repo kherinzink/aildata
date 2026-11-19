@@ -39,7 +39,7 @@ function formatCell(val: any): string {
   return String(val);
 }
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 100;
 
 export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   // Mode: 'normalized' or 'all' or 'import_<sheetName>'
@@ -48,6 +48,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortAsc, setSortAsc] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
   
   // Normalized Detainees from API
   const [normalizedDetainees, setNormalizedDetainees] = useState<DetaineeSummary[]>([]);
@@ -74,11 +75,16 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const [dateFilterEnd, setDateFilterEnd] = useState<string>('');
 
   // Fetch normalized detainees
-  const loadNormalizedDetainees = async () => {
+  const loadNormalizedDetainees = async (page = currentPage, query = searchQuery) => {
     try {
       setNormalizedLoading(true);
-      const data = await getDetainees({ limit: 500 });
-      setNormalizedDetainees(data);
+      const res = await getDetainees({
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
+        search: query || undefined
+      });
+      setNormalizedDetainees(res.results || []);
+      setTotalCount(res.total || 0);
     } catch {
       // Fallback
     } finally {
@@ -87,13 +93,15 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   };
 
   useEffect(() => {
-    if (records.length === 0) {
-      setNormalizedDetainees([]);
-      setSelectedDataset('normalized');
-    } else {
-      loadNormalizedDetainees();
+    if (selectedDataset === 'normalized') {
+      if (records.length === 0) {
+        setNormalizedDetainees([]);
+        setTotalCount(0);
+      } else {
+        loadNormalizedDetainees(currentPage, searchQuery);
+      }
     }
-  }, [records]);
+  }, [records, selectedDataset, currentPage, searchQuery]);
 
   // Extract unique categories for filter pills
   const categories = useMemo(() => {
@@ -226,11 +234,17 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   }, [activeRows, searchQuery, sortField, sortAsc, dateFilterField, dateFilterStart, dateFilterEnd, selectedDataset]);
 
   // Pagination calculation
-  const totalPages = Math.ceil(sortedRows.length / PAGE_SIZE) || 1;
+  const totalPages = selectedDataset === 'normalized'
+    ? (Math.ceil(totalCount / PAGE_SIZE) || 1)
+    : (Math.ceil(sortedRows.length / PAGE_SIZE) || 1);
+
   const paginatedRows = useMemo(() => {
+    if (selectedDataset === 'normalized') {
+      return sortedRows;
+    }
     const start = (currentPage - 1) * PAGE_SIZE;
     return sortedRows.slice(start, start + PAGE_SIZE);
-  }, [sortedRows, currentPage]);
+  }, [selectedDataset, sortedRows, currentPage]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {

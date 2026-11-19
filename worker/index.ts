@@ -724,7 +724,7 @@ export default {
       // 8. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
       if (path === '/api/detainees' && method === 'GET') {
         const limitParam = url.searchParams.get('limit');
-        const limit = limitParam ? Math.min(parseInt(limitParam, 10), 10000) : 500;
+        const limit = limitParam ? Math.min(parseInt(limitParam, 10), 1000) : 100;
         const offset = parseInt(url.searchParams.get('offset') || '0', 10);
         const search = url.searchParams.get('search')?.toLowerCase().trim();
 
@@ -742,6 +742,17 @@ export default {
           )
         `;
 
+        let countQuery = `SELECT COUNT(*) as total FROM detainees d`;
+        let countStmt;
+        if (search) {
+          countQuery += ` WHERE LOWER(d.name) LIKE ? OR d.jacket_number LIKE ? OR d.ice_case_number LIKE ? OR LOWER(d.country) LIKE ?`;
+          countStmt = env.DB.prepare(countQuery).bind(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        } else {
+          countStmt = env.DB.prepare(countQuery);
+        }
+        const countRes = await countStmt.first<{ total: number }>();
+        const total = countRes?.total || 0;
+
         let stmt;
         if (search) {
           query += ` WHERE LOWER(d.name) LIKE ? OR d.jacket_number LIKE ? OR d.ice_case_number LIKE ? OR LOWER(d.country) LIKE ?`;
@@ -753,7 +764,7 @@ export default {
         }
 
         const { results } = await stmt.all();
-        return new Response(JSON.stringify(results), { status: 200, headers: corsHeaders });
+        return new Response(JSON.stringify({ results, total }), { status: 200, headers: corsHeaders });
       }
 
       // 9. Detainees: Master-Detail by ID (Viewer+)

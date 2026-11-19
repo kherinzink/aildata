@@ -449,7 +449,12 @@ export async function getRecords(category?: string): Promise<DynamicRecord[]> {
   return await res.json();
 }
 
-export async function getDetainees(params?: { search?: string; limit?: number; offset?: number }): Promise<DetaineeSummary[]> {
+export interface DetaineeListResponse {
+  results: DetaineeSummary[];
+  total: number;
+}
+
+export async function getDetainees(params?: { search?: string; limit?: number; offset?: number }): Promise<DetaineeListResponse> {
   const query = new URLSearchParams();
   if (params?.search) query.set('search', params.search);
   if (params?.limit) query.set('limit', String(params.limit));
@@ -458,7 +463,11 @@ export async function getDetainees(params?: { search?: string; limit?: number; o
   const url = `${API_URL}/api/detainees${query.toString() ? '?' + query.toString() : ''}`;
   const res = await apiFetch(url);
   if (!res.ok) throw new Error('Failed to fetch normalized detainees');
-  return await res.json();
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    return { results: data, total: data.length };
+  }
+  return data;
 }
 
 export async function getDetaineeDetail(id: string): Promise<DetaineeDetail> {
