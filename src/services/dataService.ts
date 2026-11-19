@@ -464,10 +464,17 @@ export async function getDetainees(params?: { search?: string; limit?: number; o
   const res = await apiFetch(url);
   if (!res.ok) throw new Error('Failed to fetch normalized detainees');
   const data = await res.json();
+  
   if (Array.isArray(data)) {
     return { results: data, total: data.length };
   }
-  return data;
+  if (data && Array.isArray(data.results)) {
+    return { results: data.results, total: typeof data.total === 'number' ? data.total : data.results.length };
+  }
+  if (data && Array.isArray(data.data)) {
+    return { results: data.data, total: typeof data.total === 'number' ? data.total : data.data.length };
+  }
+  return { results: [], total: 0 };
 }
 
 export async function getDetaineeDetail(id: string): Promise<DetaineeDetail> {

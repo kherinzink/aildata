@@ -83,10 +83,12 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
         offset: (page - 1) * PAGE_SIZE,
         search: query || undefined
       });
-      setNormalizedDetainees(res.results || []);
-      setTotalCount(res.total || 0);
+      const results = Array.isArray(res?.results) ? res.results : [];
+      setNormalizedDetainees(results);
+      setTotalCount(typeof res?.total === 'number' ? res.total : results.length);
     } catch {
-      // Fallback
+      setNormalizedDetainees([]);
+      setTotalCount(0);
     } finally {
       setNormalizedLoading(false);
     }
@@ -119,7 +121,8 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
 
   // Rows when in Normalized mode
   const normalizedRows = useMemo(() => {
-    return normalizedDetainees.map(d => ({
+    const list = Array.isArray(normalizedDetainees) ? normalizedDetainees : [];
+    return list.map(d => ({
       id: d.id,
       Name: d.name || 'UNKNOWN',
       'Jacket #': d.jacket_number || 'N/A',
