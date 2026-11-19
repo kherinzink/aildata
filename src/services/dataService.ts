@@ -446,7 +446,11 @@ export async function getRecords(category?: string): Promise<DynamicRecord[]> {
   const url = category ? `${API_URL}/api/records?category=${encodeURIComponent(category)}` : `${API_URL}/api/records`;
   const res = await apiFetch(url);
   if (!res.ok) throw new Error('Failed to fetch records from Cloudflare D1 API');
-  return await res.json();
+  const data = await res.json();
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.results)) return data.results;
+  if (data && Array.isArray(data.data)) return data.data;
+  return [];
 }
 
 export interface DetaineeListResponse {
