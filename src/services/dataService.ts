@@ -26,6 +26,7 @@ export interface DetaineeSummary {
   delivering_agency?: string;
   charge_count?: number;
   charges_summary?: string;
+  judge_ordered?: string;
   penpal?: string;
 }
 

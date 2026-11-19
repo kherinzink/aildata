@@ -18,6 +18,7 @@ const COLUMN_FIELD_MAP: Record<string, string> = {
   'Departure Date': 'departure_date',
   Agency: 'delivering_agency',
   Charges: 'charges',
+  'Judge Ordered': 'judge_ordered',
   Penpal: 'penpal'
 };
 
@@ -76,7 +77,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const loadNormalizedDetainees = async () => {
     try {
       setNormalizedLoading(true);
-      const data = await getDetainees({ limit: 10000 });
+      const data = await getDetainees({ limit: 500 });
       setNormalizedDetainees(data);
     } catch {
       // Fallback
@@ -121,6 +122,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
       'Departure Date': d.departure_date || 'In Custody',
       Agency: d.delivering_agency || '',
       Charges: d.charges_summary || '',
+      'Judge Ordered': d.judge_ordered || '',
       Penpal: d.penpal || '',
       __normalizedRecord: d
     }));
@@ -159,7 +161,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   // Extract dynamic column keys
   const columns = useMemo(() => {
     if (selectedDataset === 'normalized') {
-      return ['Name', 'Jacket #', 'Country', 'Age', 'Sex', 'Book Date', 'Departure Date', 'Agency', 'Charges', 'Penpal'];
+      return ['Name', 'Jacket #', 'Country', 'Age', 'Sex', 'Book Date', 'Departure Date', 'Agency', 'Charges', 'Judge Ordered', 'Penpal'];
     }
     const allKeysSet = new Set<string>();
     activeRows.forEach(row => {
@@ -296,6 +298,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
         else if (fieldKey === 'departure_date') updated.departure_date = trimmed;
         else if (fieldKey === 'delivering_agency') updated.delivering_agency = trimmed;
         else if (fieldKey === 'charges') updated.charges_summary = trimmed;
+        else if (fieldKey === 'judge_ordered') updated.judge_ordered = trimmed;
         else if (fieldKey === 'penpal') updated.penpal = trimmed;
         return updated;
       })
@@ -320,6 +323,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
           else if (fieldKey === 'departure_date') reverted.departure_date = originalValue;
           else if (fieldKey === 'delivering_agency') reverted.delivering_agency = originalValue;
           else if (fieldKey === 'charges') reverted.charges_summary = originalValue;
+          else if (fieldKey === 'judge_ordered') reverted.judge_ordered = originalValue;
           else if (fieldKey === 'penpal') reverted.penpal = originalValue;
           return reverted;
         })

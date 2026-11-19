@@ -18,11 +18,21 @@
   - `aildata.db` (binary SQLite file)
 - **Targeted View Reads:** `src/views/DashboardView.tsx` and `src/views/SpreadsheetView.tsx` are 300-400+ lines. Use surgical `start_line` / `end_line` reads or `grep_search` rather than loading entire files repeatedly.
 
-## 3. Codebase Architecture Boundaries
+## 3. Codebase Architecture Boundaries & Reference
 - **Frontend Code:** Lives in `App.tsx`, `src/views/`, `src/components/`, and `src/services/dataService.ts`.
-- **Worker / API Code:** Lives in `worker/` (`worker/index.ts` and modular helpers `worker/src/*.ts`).
-- **Database Schemas & Migrations:** SQL definitions live in `src/database/` and `migrations/`.
+- **Worker / API Code:** Lives in `worker/` (`worker/index.ts` and modular helpers `worker/src/*.ts`: `deduplicator.ts`, `normalizer.ts`, `retention.ts`).
+- **Database Schemas & Migrations:** SQL definitions live in `src/database/` (`d1_schema.sql`, `schema.sql`) and `migrations/` (`0002_` through `0006_*.sql`).
 - **Session & Storage Abstraction:** All auth/token interactions in the frontend MUST pass through `src/services/dataService.ts` to maintain cross-platform compatibility (web `localStorage` vs native secure store).
 - **Relational vs. Dynamic Separation:**
   - Raw imports are stored as category snapshots in `dynamic_records`.
   - Normalized records belong to `detainees` -> `detentions` -> `charges`, `legal_proceedings`, `correspondence`.
+- **Key Test & Utility Scripts (`scripts/`):**
+  - Test suites: `test_admin_suite.js`, `test_datepicker_suite.js`, `test_deduplication_suite.js`, `test_inline_edit.js`, `test_stats_metrics.js`.
+  - Data generators & parsers: `generate_10k_xlsx.js`, `generate_comparison_xlsx.js`, `generate_mini_duplicates_xlsx.js`, `parse_test1_ods.py`, `inspect_ods.py`, `migrate_to_relational.py`, `import_test1_to_sqlite.py`.
+
+## 4. API Routing & RBAC Summary
+- **Public Routes:** `GET /api/auth/setup-status`, `POST /api/auth/login`, `POST /api/auth/register` (First-Use setup only), `GET /api/auth/invite/:token`, `POST /api/auth/activate`.
+- **Viewer Routes (Read-only):** `GET /api/records`, `GET /api/detainees`, `GET /api/detainees/:id`, `GET /api/stats`.
+- **Analyst Routes:** `POST /api/records/batch` (spreadsheet ingestion).
+- **Admin Routes:** User management (`GET /api/admin/users`, `PATCH /api/admin/users/:id/role`, `PATCH /api/admin/users/:id/status`, `POST /api/admin/users/:id/unlock`, `POST /api/admin/users/:id/reset-invite`, `POST /api/admin/users/:id/password`, `DELETE /api/admin/users/:id`), category deletion (`DELETE /api/records/category/:cat`), database reset (`DELETE /api/records`), and maintenance purge (`POST /api/maintenance/purge`).
+

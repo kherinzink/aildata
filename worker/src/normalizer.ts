@@ -98,6 +98,34 @@ function getField(row: Record<string, any>, key: string): string | undefined {
   return undefined;
 }
 
+export function normalizeJudgeOrdered(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const val = raw.trim();
+  if (!val) return undefined;
+  const lVal = val.toLowerCase();
+
+  if (lVal === 'removal' || lVal.includes('removal') || lVal.includes('expedited') || lVal.includes('reinstatement') || lVal.includes('deport')) {
+    return 'Removal';
+  }
+  if (lVal === 'voldep' || lVal === 'voluntary departure' || lVal.includes('volunt') || lVal.includes('voldep') || lVal.includes('departure')) {
+    return 'VolDep';
+  }
+  if (lVal === 'old eoir' || lVal === 'old-eoir' || lVal === 'old_eoir' || lVal.includes('old eoir')) {
+    return 'Old EOIR';
+  }
+  if (lVal === 'no eoir' || lVal === 'no-eoir' || lVal === 'no_eoir' || lVal.includes('no eoir' ) || lVal.includes('none recorded') || lVal === 'none' || lVal === 'n/a' || lVal === '-') {
+    return 'No EOIR';
+  }
+  if (lVal === 'pending' || lVal.includes('pending') || lVal.includes('continued') || lVal.includes('habeas') || lVal.includes('redetermination')) {
+    return 'Pending';
+  }
+  if (lVal === 'other') {
+    return 'Other';
+  }
+
+  return 'Other';
+}
+
 export function normalizeSpreadsheetRow(row: Record<string, any>): NormalizedEntity {
   const detainee: ExtractedDetainee = {
     jacket_number: getField(row, 'jacket_number'),
@@ -126,8 +154,9 @@ export function normalizeSpreadsheetRow(row: Record<string, any>): NormalizedEnt
     ? rawCharges.split(/[;\n]/).map(c => c.trim()).filter(Boolean)
     : [];
 
+  const rawJudgeOrdered = getField(row, 'judge_ordered');
   const legal: ExtractedLegal = {
-    judge_ordered: getField(row, 'judge_ordered'),
+    judge_ordered: normalizeJudgeOrdered(rawJudgeOrdered),
     decision_date: getField(row, 'decision_date'),
     day_wait: getField(row, 'day_wait'),
     notes: getField(row, 'notes')

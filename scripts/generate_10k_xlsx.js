@@ -141,9 +141,12 @@ const PENPALS_POOL = [
 ];
 
 const JUDGE_ORDERS = [
-  "Order of Removal Issued", "Voluntary Departure Granted", "Bond Redetermination Pending",
-  "Withholding of Removal Granted", "Case Continued for Master Calendar", "Order of Supervision",
-  "Habeas Corpus Petition Pending", "None Recorded", "None Recorded"
+  "Removal",
+  "VolDep",
+  "Old EOIR",
+  "No EOIR",
+  "Pending",
+  "Other"
 ];
 
 // Seeded pseudorandom generator for deterministic, organic-feeling variance

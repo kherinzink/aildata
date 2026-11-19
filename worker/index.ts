@@ -1,4 +1,4 @@
-import { normalizeSpreadsheetRow, NormalizedEntity } from './src/normalizer';
+import { normalizeSpreadsheetRow, NormalizedEntity, normalizeJudgeOrdered } from './src/normalizer';
 import { runRetentionJob } from './src/retention';
 import { analyzeSpreadsheetRows, commitCuratedIngestion } from './src/deduplicator';
 
@@ -724,7 +724,7 @@ export default {
       // 8. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
       if (path === '/api/detainees' && method === 'GET') {
         const limitParam = url.searchParams.get('limit');
-        const limit = limitParam ? Math.min(parseInt(limitParam, 10), 10000) : 10000;
+        const limit = limitParam ? Math.min(parseInt(limitParam, 10), 10000) : 500;
         const offset = parseInt(url.searchParams.get('offset') || '0', 10);
         const search = url.searchParams.get('search')?.toLowerCase().trim();
 
@@ -734,6 +734,7 @@ export default {
             dt.id as detention_id, dt.book_date_gcj, dt.departure_date, dt.cell, dt.delivering_agency,
             (SELECT COUNT(*) FROM charges c WHERE c.detention_id = dt.id) as charge_count,
             (SELECT GROUP_CONCAT(c.charge_description, '; ') FROM charges c WHERE c.detention_id = dt.id) as charges_summary,
+            (SELECT judge_ordered FROM legal_proceedings lp WHERE lp.detention_id = dt.id LIMIT 1) as judge_ordered,
             (SELECT penpal FROM correspondence cp WHERE cp.detainee_id = d.id LIMIT 1) as penpal
           FROM detainees d
           LEFT JOIN detentions dt ON dt.detainee_id = d.id AND dt.id = (
@@ -944,6 +945,30 @@ export default {
             if (detentionForProc && decVal) {
               statements.push(
                 env.DB.prepare('INSERT INTO legal_proceedings (detention_id, decision_date) VALUES (?, ?)').bind(detentionForProc.id, decVal)
+              );
+            }
+          }
+        }
+
+        // 5. Legal Proceedings (judge_ordered) updates
+        if (body.judge_ordered !== undefined) {
+          const judgeVal = body.judge_ordered !== null && String(body.judge_ordered).trim() !== '' ? normalizeJudgeOrdered(String(body.judge_ordered)) : null;
+          const existingProc = await env.DB.prepare(
+            'SELECT lp.id FROM legal_proceedings lp JOIN detentions d ON lp.detention_id = d.id WHERE d.detainee_id = ? LIMIT 1'
+          ).bind(detaineeId).first<{ id: number }>();
+
+          if (existingProc) {
+            statements.push(
+              env.DB.prepare('UPDATE legal_proceedings SET judge_ordered = ? WHERE id = ?').bind(judgeVal, existingProc.id)
+            );
+          } else {
+            const detentionForProc = await env.DB.prepare(
+              'SELECT id FROM detentions WHERE detainee_id = ? ORDER BY book_date_gcj DESC, created_at DESC LIMIT 1'
+            ).bind(detaineeId).first<{ id: string }>();
+
+            if (detentionForProc) {
+              statements.push(
+                env.DB.prepare('INSERT INTO legal_proceedings (detention_id, judge_ordered) VALUES (?, ?)').bind(detentionForProc.id, judgeVal)
               );
             }
           }
