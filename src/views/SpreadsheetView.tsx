@@ -846,10 +846,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 12,
   },
   toolbarRight: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
   },
   dateFilterBar: {
     paddingHorizontal: 16,
@@ -928,6 +932,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
+    minWidth: 220,
     backgroundColor: '#ffffff',
     borderWidth: 1,
     borderColor: '#cbd5e1',
@@ -936,7 +941,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 14,
     color: '#0f172a',
-    marginRight: 12,
   },
   refreshButton: {
     paddingHorizontal: 10,
@@ -945,7 +949,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#cbd5e1',
     borderRadius: 6,
-    marginRight: 10,
   },
   refreshButtonText: {
     fontSize: 12,
