@@ -108,13 +108,17 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   // Extract unique categories for filter pills
   const categories = useMemo(() => {
     const cats = new Set<string>();
-    records.forEach(r => cats.add(r.category));
+    const safeRecs = Array.isArray(records) ? records : [];
+    safeRecs.forEach(r => {
+      if (r && r.category) cats.add(r.category);
+    });
     return Array.from(cats);
   }, [records]);
 
   // Clean up stale category selection if category was deleted
   useEffect(() => {
-    if (selectedDataset !== 'normalized' && selectedDataset !== 'all' && !categories.includes(selectedDataset)) {
+    const safeCats = Array.isArray(categories) ? categories : [];
+    if (selectedDataset !== 'normalized' && selectedDataset !== 'all' && !safeCats.includes(selectedDataset)) {
       setSelectedDataset('normalized');
     }
   }, [categories, selectedDataset]);
@@ -123,51 +127,55 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const normalizedRows = useMemo(() => {
     const list = Array.isArray(normalizedDetainees) ? normalizedDetainees : [];
     return list.map(d => ({
-      id: d.id,
-      Name: d.name || 'UNKNOWN',
-      'Jacket #': d.jacket_number || 'N/A',
-      Country: d.country || 'Unknown',
-      Age: d.age || '',
-      Sex: d.sex || '',
-      'Book Date': d.book_date_gcj || '',
-      'Departure Date': d.departure_date || 'In Custody',
-      Agency: d.delivering_agency || '',
-      Charges: d.charges_summary || '',
-      'Judge Ordered': d.judge_ordered || '',
-      Penpal: d.penpal || '',
+      id: d?.id || '',
+      Name: d?.name || 'UNKNOWN',
+      'Jacket #': d?.jacket_number || 'N/A',
+      Country: d?.country || 'Unknown',
+      Age: d?.age || '',
+      Sex: d?.sex || '',
+      'Book Date': d?.book_date_gcj || '',
+      'Departure Date': d?.departure_date || 'In Custody',
+      Agency: d?.delivering_agency || '',
+      Charges: d?.charges_summary || '',
+      'Judge Ordered': d?.judge_ordered || '',
+      Penpal: d?.penpal || '',
       __normalizedRecord: d
     }));
   }, [normalizedDetainees]);
 
   // Rows when in Raw mode
   const rawParsedRows = useMemo(() => {
+    const safeRecs = Array.isArray(records) ? records : [];
     const filtered = selectedDataset === 'all'
-      ? records
-      : records.filter(r => r.category === selectedDataset);
+      ? safeRecs
+      : safeRecs.filter(r => r && r.category === selectedDataset);
 
     return filtered.map(rec => {
       try {
-        const data = JSON.parse(rec.dataJson);
+        const data = JSON.parse(rec?.dataJson || '{}');
         const cleanedData: any = {};
-        Object.entries(data).forEach(([k, v]) => {
-          if (!k.startsWith('__EMPTY') && k.trim() !== '') {
+        Object.entries(data || {}).forEach(([k, v]) => {
+          if (k && !k.startsWith('__EMPTY') && k.trim() !== '') {
             cleanedData[k.trim()] = formatCell(v);
           }
         });
         return { 
-          id: rec.id, 
-          category: rec.category, 
-          createdAt: rec.createdAt, 
+          id: rec?.id, 
+          category: rec?.category, 
+          createdAt: rec?.createdAt, 
           __rawObj: data, 
           ...cleanedData 
         };
       } catch {
-        return { id: rec.id, category: rec.category, raw: rec.dataJson, __rawObj: {} };
+        return { id: rec?.id, category: rec?.category, raw: rec?.dataJson, __rawObj: {} };
       }
     });
   }, [records, selectedDataset]);
 
-  const activeRows = selectedDataset === 'normalized' ? normalizedRows : rawParsedRows;
+  const activeRows = useMemo(() => {
+    const rows = selectedDataset === 'normalized' ? normalizedRows : rawParsedRows;
+    return Array.isArray(rows) ? rows : [];
+  }, [selectedDataset, normalizedRows, rawParsedRows]);
 
   // Extract dynamic column keys
   const columns = useMemo(() => {
@@ -175,21 +183,26 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
       return ['Name', 'Jacket #', 'Country', 'Age', 'Sex', 'Book Date', 'Departure Date', 'Agency', 'Charges', 'Judge Ordered', 'Penpal'];
     }
     const allKeysSet = new Set<string>();
-    activeRows.forEach(row => {
-      Object.keys(row).forEach(k => {
-        if (!['id', 'category', 'createdAt', 'raw', '__rawObj', '__normalizedRecord'].includes(k)) {
-          allKeysSet.add(k);
-        }
-      });
+    const list = Array.isArray(activeRows) ? activeRows : [];
+    list.forEach(row => {
+      if (row) {
+        Object.keys(row).forEach(k => {
+          if (!['id', 'category', 'createdAt', 'raw', '__rawObj', '__normalizedRecord'].includes(k)) {
+            allKeysSet.add(k);
+          }
+        });
+      }
     });
     return Array.from(allKeysSet);
   }, [selectedDataset, activeRows]);
 
   // Filter and sort with numeric collation and date range filtering
   const sortedRows = useMemo(() => {
+    const list = Array.isArray(activeRows) ? activeRows : [];
     const query = searchQuery.toLowerCase().trim();
     
-    let filtered = query === '' ? activeRows : activeRows.filter(row => {
+    let filtered = query === '' ? list : list.filter(row => {
+      if (!row) return false;
       return Object.entries(row).some(([k, val]) => {
         if (k === '__rawObj' || k === '__normalizedRecord') return false;
         return String(val ?? '').toLowerCase().includes(query);
@@ -199,6 +212,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     // Apply date range filter if enabled
     if (dateFilterField !== 'none' && (dateFilterStart || dateFilterEnd)) {
       filtered = filtered.filter((row: any) => {
+        if (!row) return false;
         let cellDate = '';
         if (selectedDataset === 'normalized') {
           cellDate = dateFilterField === 'book_date' ? String(row['Book Date'] || '') : String(row['Departure Date'] || '');
@@ -229,8 +243,8 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     if (!sortField) return filtered;
 
     return [...filtered].sort((a, b) => {
-      const valA = String((a as any)[sortField] ?? '');
-      const valB = String((b as any)[sortField] ?? '');
+      const valA = String((a as any)?.[sortField] ?? '');
+      const valB = String((b as any)?.[sortField] ?? '');
       const cmp = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
       return sortAsc ? cmp : -cmp;
     });
@@ -242,11 +256,12 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     : (Math.ceil(sortedRows.length / PAGE_SIZE) || 1);
 
   const paginatedRows = useMemo(() => {
+    const list = Array.isArray(sortedRows) ? sortedRows : [];
     if (selectedDataset === 'normalized') {
-      return sortedRows;
+      return list;
     }
     const start = (currentPage - 1) * PAGE_SIZE;
-    return sortedRows.slice(start, start + PAGE_SIZE);
+    return list.slice(start, start + PAGE_SIZE);
   }, [selectedDataset, sortedRows, currentPage]);
 
   const handleSort = (field: string) => {
