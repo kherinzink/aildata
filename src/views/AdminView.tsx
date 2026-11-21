@@ -13,7 +13,9 @@ import {
 } from 'react-native';
 import {
   AdminUser,
+  AuditLogEntry,
   getAdminUsers,
+  getAuditLogs,
   updateUserRole,
   updateUserStatus,
   unlockUserAccount,
@@ -68,6 +70,12 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
   const [purgeResult, setPurgeResult] = useState<string | null>(null);
   const [clearLoading, setClearLoading] = useState<boolean>(false);
 
+  // State: Audit Logs
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [loadingAuditLogs, setLoadingAuditLogs] = useState<boolean>(true);
+  const [auditActionFilter, setAuditActionFilter] = useState<string>('ALL');
+  const [selectedLogMetadata, setSelectedLogMetadata] = useState<AuditLogEntry | null>(null);
+
   // Action busy indicators per user id
   const [busyUsers, setBusyUsers] = useState<Record<string, string>>({});
 
@@ -97,13 +105,32 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
     }
   };
 
+  const loadAuditLogs = async (isSilent: boolean = false) => {
+    if (!isSilent) setLoadingAuditLogs(true);
+    try {
+      const actionParam = auditActionFilter === 'ALL' ? undefined : auditActionFilter;
+      const res = await getAuditLogs(200, 0, actionParam);
+      setAuditLogs(res.logs || []);
+    } catch (err: any) {
+      console.error('Failed to load audit logs:', err);
+    } finally {
+      if (!isSilent) setLoadingAuditLogs(false);
+    }
+  };
+
   useEffect(() => {
     loadUsers();
+    loadAuditLogs();
   }, []);
+
+  useEffect(() => {
+    loadAuditLogs(true);
+  }, [auditActionFilter]);
 
   const handleRefresh = () => {
     setRefreshing(true);
     loadUsers(true);
+    loadAuditLogs(true);
   };
 
   // Metrics calculation
@@ -778,7 +805,139 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
         )}
       </View>
 
-      {/* Section 3: Data Lifecycle & Database Maintenance */}
+      {/* Section 3: Immutable Security & Admin Audit Logs */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View>
+            <Text style={styles.cardTitle}>📋 Immutable Security & Admin Audit Logs</Text>
+            <Text style={styles.cardSubtitle}>
+              Monitor security events, authentication attempts, and administrative actions.
+            </Text>
+          </View>
+          <Text style={styles.countBadge}>
+            Showing {auditLogs.length} events
+          </Text>
+        </View>
+
+        {/* Action Filter Toolbar */}
+        <View style={styles.toolbar}>
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterLabel}>Filter Action:</Text>
+            {(['ALL', 'LOGIN_SUCCESS', 'LOGIN_FAILED', 'USER_REGISTERED', 'ROLE_UPDATED', 'ACCOUNT_SUSPENDED', 'RETENTION_PURGE', 'DATABASE_CLEARED'] as const).map(act => (
+              <TouchableOpacity
+                key={act}
+                style={[styles.filterPill, auditActionFilter === act && styles.filterPillActive]}
+                onPress={() => setAuditActionFilter(act)}
+              >
+                <Text style={[styles.filterPillText, auditActionFilter === act && styles.filterPillTextActive]}>
+                  {act}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* Audit Logs Table / List */}
+        {loadingAuditLogs ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#2563eb" />
+            <Text style={styles.loadingText}>Loading immutable audit logs...</Text>
+          </View>
+        ) : auditLogs.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyTitle}>No audit log entries found</Text>
+            <Text style={styles.emptySubtitle}>Events will appear here as users interact with the system.</Text>
+          </View>
+        ) : (
+          <View style={styles.tableContainer}>
+            {auditLogs.map(log => (
+              <View key={log.id} style={styles.auditRow}>
+                <View style={{ flex: 1.5 }}>
+                  <Text style={styles.auditTime}>
+                    {log.created_at ? new Date(log.created_at).toLocaleString() : 'N/A'}
+                  </Text>
+                  <Text style={styles.auditIp}>IP: {log.ip_address || 'unknown'}</Text>
+                </View>
+
+                <View style={{ flex: 1.5 }}>
+                  <View style={styles.auditActionBadge}>
+                    <Text style={styles.auditActionText}>{log.action}</Text>
+                  </View>
+                </View>
+
+                <View style={{ flex: 2.5 }}>
+                  <Text style={styles.auditActor} numberOfLines={1}>{log.actor_email || 'System'}</Text>
+                  {log.target_id && (
+                    <Text style={styles.auditTarget} numberOfLines={1}>Target: {log.target_id}</Text>
+                  )}
+                  {log.metadata && (() => {
+                    try {
+                      const meta = JSON.parse(log.metadata);
+                      if (meta.diffs && Array.isArray(meta.diffs) && meta.diffs.length > 0) {
+                        return (
+                          <View style={{ marginTop: 4 }}>
+                            {meta.diffs.map((d: any, idx: number) => (
+                              <Text key={idx} style={styles.auditDiffText} numberOfLines={1}>
+                                {d.field}: <Text style={{ color: '#dc2626' }}>{String(d.before ?? 'null')}</Text> ➔ <Text style={{ color: '#16a34a' }}>{String(d.after ?? 'null')}</Text>
+                              </Text>
+                            ))}
+                          </View>
+                        );
+                      }
+                      if (meta.before !== undefined || meta.after !== undefined) {
+                        return (
+                          <Text style={styles.auditDiffText} numberOfLines={2}>
+                            {meta.field || 'Field'}: <Text style={{ color: '#dc2626' }}>{String(meta.before ?? 'null')}</Text> ➔ <Text style={{ color: '#16a34a' }}>{String(meta.after ?? 'null')}</Text>
+                          </Text>
+                        );
+                      }
+                      if (meta.previousRole !== undefined && meta.newRole !== undefined) {
+                        return (
+                          <Text style={styles.auditDiffText} numberOfLines={2}>
+                            Role: <Text style={{ color: '#dc2626' }}>{meta.previousRole}</Text> ➔ <Text style={{ color: '#16a34a' }}>{meta.newRole}</Text>
+                          </Text>
+                        );
+                      }
+                      if (meta.previousStatus !== undefined && meta.newStatus !== undefined) {
+                        return (
+                          <Text style={styles.auditDiffText} numberOfLines={2}>
+                            Status: <Text style={{ color: '#dc2626' }}>{meta.previousStatus}</Text> ➔ <Text style={{ color: '#16a34a' }}>{meta.newStatus}</Text>
+                          </Text>
+                        );
+                      }
+                      if (meta.changedFields && Array.isArray(meta.changedFields)) {
+                        return (
+                          <Text style={styles.auditDiffText} numberOfLines={2}>
+                            Changed: {meta.changedFields.join(', ')}
+                          </Text>
+                        );
+                      }
+                      return null;
+                    } catch {
+                      return null;
+                    }
+                  })()}
+                </View>
+
+                <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                  {log.metadata ? (
+                    <TouchableOpacity
+                      style={styles.metadataButton}
+                      onPress={() => setSelectedLogMetadata(log)}
+                    >
+                      <Text style={styles.metadataButtonText}>📄 JSON</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text style={styles.textMuted}>-</Text>
+                  )}
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+
+      {/* Section 4: Data Lifecycle & Database Maintenance */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View>
@@ -947,11 +1106,126 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
           </View>
         </View>
       </Modal>
+
+      {/* Modal: Audit Log Metadata Inspector */}
+      <Modal visible={selectedLogMetadata !== null} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxWidth: 600, width: '90%' }]}>
+            <Text style={styles.modalTitle}>📄 Audit Event Metadata</Text>
+            <Text style={styles.modalSubtitle}>
+              Action: <Text style={{ fontWeight: '700' }}>{selectedLogMetadata?.action}</Text> • Actor: <Text style={{ fontWeight: '700' }}>{selectedLogMetadata?.actor_email}</Text>
+            </Text>
+
+            <View style={styles.metadataBox}>
+              <TextInput
+                style={styles.metadataJsonText}
+                multiline
+                editable={false}
+                value={
+                  selectedLogMetadata?.metadata
+                    ? (() => {
+                        try {
+                          return JSON.stringify(JSON.parse(selectedLogMetadata.metadata), null, 2);
+                        } catch {
+                          return selectedLogMetadata.metadata;
+                        }
+                      })()
+                    : 'No metadata attached.'
+                }
+              />
+            </View>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.primaryButton}
+                onPress={() => setSelectedLogMetadata(null)}
+              >
+                <Text style={styles.primaryButtonText}>Close Inspector</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  auditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+    gap: 12,
+    flexWrap: 'wrap',
+  },
+  auditTime: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  auditIp: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  auditActionBadge: {
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+  },
+  auditActionText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#334155',
+  },
+  auditActor: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  auditTarget: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  auditDiffText: {
+    fontSize: 11,
+    color: '#334155',
+    marginTop: 4,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  metadataButton: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  metadataButtonText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#1d4ed8',
+  },
+  metadataBox: {
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    padding: 12,
+    maxHeight: 300,
+    marginTop: 8,
+  },
+  metadataJsonText: {
+    color: '#e2e8f0',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 12,
+  },
   container: {
     padding: 24,
     backgroundColor: '#f8fafc',

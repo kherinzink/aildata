@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
-import { DynamicRecord, clearDatabase, deleteCategoryRecords, registerUser, inviteUser, getDashboardStats, runRetentionPurge, DashboardStats } from '../services/dataService';
+import { DynamicRecord, registerUser, getDashboardStats, DashboardStats } from '../services/dataService';
 import { BarChart, LineChart, DonutChart, HorizontalBarGauge } from '../components/Charts';
 import { DatePickerInput, parseISODate } from '../components/DatePicker';
 
@@ -21,19 +21,6 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
 
   // Dynamic As-of Cutoff Date State
   const [asOfDate, setAsOfDate] = useState<string>('');
-
-  // Admin User Invitation State
-  const [adminEmail, setAdminEmail] = useState('');
-  const [adminRole, setAdminRole] = useState<'viewer' | 'analyst' | 'admin'>('analyst');
-  const [adminLoading, setAdminLoading] = useState(false);
-  const [adminMessage, setAdminMessage] = useState<string | null>(null);
-  const [adminError, setAdminError] = useState<string | null>(null);
-  const [inviteLink, setInviteLink] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-
-  // Admin Retention Purge State
-  const [purgeLoading, setPurgeLoading] = useState(false);
-  const [purgeResult, setPurgeResult] = useState<string | null>(null);
 
   // Fetch Server-side /api/stats
   const loadStats = async () => {
@@ -196,109 +183,6 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
     }
     return [];
   }, [serverStats]);
-
-  const handleClearDatabase = async () => {
-    if (!isAdmin) {
-      alert('Only administrators can clear database records.');
-      return;
-    }
-    const confirmClear = typeof window !== 'undefined' && window.confirm 
-      ? window.confirm('Are you sure you want to clear all database records?') 
-      : true;
-
-    if (confirmClear) {
-      try {
-        await clearDatabase();
-        await onDataChanged();
-        await loadStats();
-        alert('Database cleared successfully.');
-      } catch (e: any) {
-        alert(`Failed to clear database: ${e.message}`);
-      }
-    }
-  };
-
-  const handleDeleteCategory = async (cat: string) => {
-    if (!isAdmin) return;
-    const confirmDelete = typeof window !== 'undefined' && window.confirm 
-      ? window.confirm(`Are you sure you want to delete all records for imported sheet "${cat}"?`) 
-      : true;
-
-    if (confirmDelete) {
-      try {
-        await deleteCategoryRecords(cat);
-        await onDataChanged();
-        await loadStats();
-        alert(`Successfully deleted records for "${cat}".`);
-      } catch (e: any) {
-        alert(`Failed to delete records: ${e.message}`);
-      }
-    }
-  };
-
-  const handleInviteUser = async () => {
-    setAdminMessage(null);
-    setAdminError(null);
-    setInviteLink(null);
-    setCopied(false);
-
-    if (!adminEmail.trim()) {
-      setAdminError('Email address is required to invite a team member.');
-      return;
-    }
-
-    setAdminLoading(true);
-    try {
-      const res = await inviteUser(adminEmail.trim(), adminRole);
-      const origin = typeof window !== 'undefined' && window.location?.origin 
-        ? window.location.origin 
-        : 'https://aildata.khanis.workers.dev';
-      const fullLink = `${origin}/?invite=${res.inviteToken}`;
-      setInviteLink(fullLink);
-      setAdminMessage(`Invitation generated for ${res.email} (${res.role.toUpperCase()}). The link is valid for 7 days.`);
-      setAdminEmail('');
-    } catch (e: any) {
-      setAdminError(e.message || 'Failed to generate invitation link');
-    } finally {
-      setAdminLoading(false);
-    }
-  };
-
-  const handleCopyLink = () => {
-    if (!inviteLink) return;
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(inviteLink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 3000);
-    } else {
-      alert(`Copy this activation link:\n${inviteLink}`);
-    }
-  };
-
-  const handleRunPurge = async () => {
-    if (!isAdmin) return;
-    const confirmPurge = typeof window !== 'undefined' && window.confirm
-      ? window.confirm('Execute 1-year retention purge and snapshot aggregate metrics into aggregate_rollups?')
-      : true;
-
-    if (!confirmPurge) return;
-
-    setPurgeLoading(true);
-    setPurgeResult(null);
-    try {
-      const res = await runRetentionPurge();
-      const info = res.result;
-      setPurgeResult(
-        `Purge Completed: ${info.purgedDetentionsCount} detentions, ${info.purgedDetaineesCount} orphaned detainees, and ${info.purgedDynamicRecordsCount} raw staging rows purged (>1 year). Snapshot date: ${info.snapshotDate}`
-      );
-      await onDataChanged();
-      await loadStats();
-    } catch (e: any) {
-      alert(`Purge failed: ${e.message}`);
-    } finally {
-      setPurgeLoading(false);
-    }
-  };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -535,143 +419,28 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
 
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>📁 Raw Ingested Sheet Categories</Text>
-          {isAdmin ? (
-            <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>
-              Admin controls: click any sheet badge below to delete its records:
-            </Text>
-          ) : (
-            <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>
-              Currently imported sheet categories:
-            </Text>
-          )}
+          <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>
+            Currently imported sheet categories:
+          </Text>
           
           <View style={styles.badgeContainer}>
             {categories.length === 0 ? (
               <Text style={styles.emptyText}>No imported sheets yet.</Text>
             ) : (
               categories.map(cat => (
-                <TouchableOpacity 
+                <View 
                   key={cat} 
-                  style={[styles.categoryBadge, isAdmin && { backgroundColor: '#fef2f2', borderColor: '#fecaca' }]} 
-                  disabled={!isAdmin}
-                  onPress={() => handleDeleteCategory(cat)}
+                  style={styles.categoryBadge}
                 >
-                  <Text style={[styles.categoryText, isAdmin && { color: '#991b1b' }]}>
-                    {cat} ({records.filter(r => r.category === cat).length}) {isAdmin ? '🗑️' : ''}
+                  <Text style={styles.categoryText}>
+                    {cat} ({records.filter(r => r.category === cat).length})
                   </Text>
-                </TouchableOpacity>
+                </View>
               ))
             )}
           </View>
         </View>
       </View>
-
-      {/* Admin User Invitation Card */}
-      {isAdmin && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>👤 Admin: Invite Team Member (One-Click Link)</Text>
-          <Text style={styles.sectionDesc}>
-            Generate a secure activation link with assigned permissions. The invited team member sets their own password.
-          </Text>
-
-          {adminError && <Text style={styles.errorText}>{adminError}</Text>}
-          {adminMessage && <Text style={styles.successText}>{adminMessage}</Text>}
-
-          {inviteLink && (
-            <View style={styles.inviteLinkCard}>
-              <Text style={styles.inviteLinkHeading}>🔗 Activation Link Generated:</Text>
-              <TextInput
-                style={styles.inviteLinkInput}
-                value={inviteLink}
-                editable={false}
-                selectTextOnFocus
-              />
-              <TouchableOpacity style={styles.copyButton} onPress={handleCopyLink}>
-                <Text style={styles.copyButtonText}>{copied ? '✓ Link Copied!' : '📋 Copy Invite Link'}</Text>
-              </TouchableOpacity>
-              <Text style={styles.inviteHelperText}>
-                Send this link to the team member. When opened, they will be prompted to choose their own password to activate their account.
-              </Text>
-            </View>
-          )}
-
-          <View style={styles.provisionForm}>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Team Member Email</Text>
-              <TextInput
-                style={styles.adminInput}
-                placeholder="colleague@aildata.org"
-                placeholderTextColor="#94a3b8"
-                autoCapitalize="none"
-                keyboardType="email-address"
-                value={adminEmail}
-                onChangeText={setAdminEmail}
-              />
-            </View>
-
-            <Text style={styles.inputLabel}>Assigned Role</Text>
-            <View style={styles.rolePickerRow}>
-              {(['viewer', 'analyst', 'admin'] as const).map(r => (
-                <TouchableOpacity
-                  key={r}
-                  style={[styles.rolePill, adminRole === r && styles.activeRolePill]}
-                  onPress={() => setAdminRole(r)}
-                >
-                  <Text style={[styles.rolePillText, adminRole === r && styles.activeRolePillText]}>
-                    {r.toUpperCase()}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <TouchableOpacity 
-              style={[styles.provisionButton, adminLoading && styles.disabledButton]} 
-              disabled={adminLoading} 
-              onPress={handleInviteUser}
-            >
-              {adminLoading ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <Text style={styles.provisionButtonText}>Generate Invitation Link</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {/* Database Maintenance & Ephemeral Retention (Admin Only) */}
-      {isAdmin && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>⚙️ Data Lifecycle & Database Maintenance</Text>
-          <Text style={styles.sectionDesc}>
-            Manage automatic retention policies, permanent rollup snapshots, and raw staging data.
-          </Text>
-
-          {purgeResult && (
-            <View style={styles.purgeResultBox}>
-              <Text style={styles.purgeResultText}>✓ {purgeResult}</Text>
-            </View>
-          )}
-
-          <View style={styles.actionRow}>
-            <TouchableOpacity 
-              style={[styles.purgeButton, purgeLoading && styles.disabledButton]} 
-              disabled={purgeLoading}
-              onPress={handleRunPurge}
-            >
-              {purgeLoading ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <Text style={styles.purgeButtonText}>🧹 Run 1-Year Retention Purge & Rollup</Text>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.clearButton} onPress={handleClearDatabase}>
-              <Text style={styles.clearButtonText}>🗑️ Clear Database Records</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
     </ScrollView>
   );
 }

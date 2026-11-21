@@ -75,6 +75,17 @@ export interface AdminUser {
   is_locked: number | boolean;
 }
 
+export interface AuditLogEntry {
+  id: number;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target_id: string | null;
+  metadata: string | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
 export interface FieldDiff {
   field: string;
   label: string;
@@ -335,6 +346,19 @@ export async function getAdminUsers(): Promise<AdminUser[]> {
   }
   const data = await res.json();
   return data.users || [];
+}
+
+export async function getAuditLogs(limit = 100, offset = 0, action?: string): Promise<{ logs: AuditLogEntry[]; total: number; limit: number; offset: number }> {
+  let url = `${API_URL}/api/admin/audit-logs?limit=${limit}&offset=${offset}`;
+  if (action) {
+    url += `&action=${encodeURIComponent(action)}`;
+  }
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch audit logs');
+  }
+  return await res.json();
 }
 
 export async function updateUserRole(userId: string, role: 'viewer' | 'analyst' | 'admin'): Promise<{ id: string; email: string; role: string }> {

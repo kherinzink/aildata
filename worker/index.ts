@@ -1,6 +1,7 @@
 import { normalizeSpreadsheetRow, NormalizedEntity, normalizeJudgeOrdered } from './src/normalizer';
 import { runRetentionJob } from './src/retention';
 import { analyzeSpreadsheetRows, commitCuratedIngestion } from './src/deduplicator';
+import { recordAuditLog } from './src/auditLogger';
 
 export interface Env {
   DB: D1Database;
@@ -268,11 +269,13 @@ export default {
             `).bind(cleanEmail, attempts).run();
           }
 
+          await recordAuditLog(env.DB, { email: cleanEmail }, 'LOGIN_FAILED', null, { attempts }, request);
           return new Response(JSON.stringify({ error: 'Invalid email or password' }), { status: 401, headers: corsHeaders });
         }
 
         // Check if account has been deactivated or suspended
         if (user.status === 'suspended') {
+          await recordAuditLog(env.DB, { id: user.id, email: user.email }, 'LOGIN_FAILED', user.id, { reason: 'account_suspended' }, request);
           return new Response(JSON.stringify({ 
             error: 'Account has been deactivated. Please contact an administrator.' 
           }), { status: 403, headers: corsHeaders });
@@ -291,6 +294,8 @@ export default {
         } else {
           await env.DB.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').bind(user.id).run();
         }
+
+        await recordAuditLog(env.DB, { id: user.id, email: user.email }, 'LOGIN_SUCCESS', user.id, null, request);
 
         // Issue cryptographically signed HMAC token
         const token = await createSignedToken(
@@ -337,6 +342,15 @@ export default {
           await env.DB.prepare(
             'INSERT INTO users (id, email, password_hash, salt, role, status) VALUES (?, ?, ?, ?, ?, ?)'
           ).bind(userId, email.toLowerCase().trim(), passwordHash, salt, assignedRole, 'active').run();
+
+          await recordAuditLog(
+            env.DB, 
+            totalUsers === 0 ? { id: userId, email: email.toLowerCase().trim() } : caller, 
+            'USER_REGISTERED', 
+            userId, 
+            { email: email.toLowerCase().trim(), role: assignedRole }, 
+            request
+          );
 
           // Only issue an auto-login token if this was first-time setup (0 existing users)
           const token = totalUsers === 0
@@ -409,6 +423,8 @@ export default {
           'UPDATE users SET password_hash = ?, salt = ?, invite_token = NULL, invite_expires_at = NULL, status = ?, last_login = CURRENT_TIMESTAMP WHERE id = ?'
         ).bind(passwordHash, salt, 'active', user.id).run();
 
+        await recordAuditLog(env.DB, { id: user.id, email: user.email }, 'USER_ACTIVATED', user.id, null, request);
+
         const sessionToken = await createSignedToken(
           { id: user.id, email: user.email, role: user.role, status: 'active', exp: Date.now() + 86400000 * 7 },
           jwtSecret
@@ -450,17 +466,20 @@ export default {
 
         const inviteToken = 'inv_' + crypto.randomUUID().replace(/-/g, '');
         const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+        const newUserId = 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
+        const targetId = existing ? existing.id : newUserId;
         if (existing) {
           await env.DB.prepare(
             'UPDATE users SET role = ?, invite_token = ?, invite_expires_at = ? WHERE id = ?'
           ).bind(assignedRole, inviteToken, expiresAt, existing.id).run();
         } else {
-          const userId = 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
           await env.DB.prepare(
             'INSERT INTO users (id, email, password_hash, role, invite_token, invite_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)'
-          ).bind(userId, cleanEmail, 'PENDING_ACTIVATION', assignedRole, inviteToken, expiresAt).run();
+          ).bind(targetId, cleanEmail, 'PENDING_ACTIVATION', assignedRole, inviteToken, expiresAt).run();
         }
+
+        await recordAuditLog(env.DB, authUser, 'USER_INVITED', targetId, { email: cleanEmail, role: assignedRole }, request);
 
         return new Response(JSON.stringify({ 
           success: true, 
@@ -502,6 +521,40 @@ export default {
         return new Response(JSON.stringify({ users: results || [] }), { status: 200, headers: corsHeaders });
       }
 
+      // 6h. Admin: Get Audit Logs (Admin role strictly required)
+      if (path === '/api/admin/audit-logs' && method === 'GET') {
+        if (authUser.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Administrator privileges required' }), { status: 403, headers: corsHeaders });
+        }
+
+        const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+        const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+        const actionFilter = url.searchParams.get('action');
+
+        let query = 'SELECT id, actor_id, actor_email, action, target_id, metadata, ip_address, created_at FROM audit_logs';
+        let countQuery = 'SELECT COUNT(*) as total FROM audit_logs';
+        const params: any[] = [];
+
+        if (actionFilter) {
+          query += ' WHERE action = ?';
+          countQuery += ' WHERE action = ?';
+          params.push(actionFilter);
+        }
+
+        query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?;';
+        params.push(limit, offset);
+
+        const logsRes = await env.DB.prepare(query).bind(...params).all();
+        const countRes = await env.DB.prepare(countQuery).bind(...(actionFilter ? [actionFilter] : [])).first<{ total: number }>();
+
+        return new Response(JSON.stringify({
+          logs: logsRes.results || [],
+          total: countRes?.total || 0,
+          limit,
+          offset
+        }), { status: 200, headers: corsHeaders });
+      }
+
       // 6b. Admin: Update User Role (Promote / Demote)
       if (path.startsWith('/api/admin/users/') && path.endsWith('/role') && (method === 'PATCH' || method === 'PUT')) {
         if (authUser.role !== 'admin') {
@@ -530,6 +583,7 @@ export default {
         }
 
         await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(newRole, userId).run();
+        await recordAuditLog(env.DB, authUser, 'ROLE_CHANGED', userId, { field: 'role', before: targetUser.role, after: newRole, previousRole: targetUser.role, newRole }, request);
 
         return new Response(JSON.stringify({ 
           success: true, 
@@ -570,6 +624,7 @@ export default {
         }
 
         await env.DB.prepare('UPDATE users SET status = ? WHERE id = ?').bind(newStatus, userId).run();
+        await recordAuditLog(env.DB, authUser, 'STATUS_CHANGED', userId, { field: 'status', before: targetUser.status, after: newStatus, previousStatus: targetUser.status, newStatus }, request);
 
         return new Response(JSON.stringify({ 
           success: true, 
@@ -782,6 +837,9 @@ export default {
           return new Response(JSON.stringify({ error: 'Detainee not found' }), { status: 404, headers: corsHeaders });
         }
 
+        // Optional high-assurance logging for sensitive detainee record access
+        await recordAuditLog(env.DB, authUser, 'SENSITIVE_RECORD_ACCESSED', detaineeId, { detaineeId }, request);
+
         const detentions = (await env.DB.prepare(
           'SELECT * FROM detentions WHERE detainee_id = ? ORDER BY book_date_gcj DESC'
         ).bind(detaineeId).all()).results || [];
@@ -827,6 +885,27 @@ export default {
 
         const body: any = await request.json();
         const statements: D1PreparedStatement[] = [];
+        const changedFields: string[] = [];
+
+        const existingDetainee = await env.DB.prepare('SELECT * FROM detainees WHERE id = ?').bind(detaineeId).first<any>();
+        if (!existingDetainee) {
+          return new Response(JSON.stringify({ error: 'Detainee not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        let targetDetentionId = body.detention_id;
+        if (!targetDetentionId) {
+          const latestStay = await env.DB.prepare(
+            'SELECT * FROM detentions WHERE detainee_id = ? ORDER BY book_date_gcj DESC, created_at DESC LIMIT 1'
+          ).bind(detaineeId).first<any>();
+          targetDetentionId = latestStay?.id;
+        }
+
+        const existingDetention = targetDetentionId ? await env.DB.prepare('SELECT * FROM detentions WHERE id = ?').bind(targetDetentionId).first<any>() : null;
+        const existingCharges = targetDetentionId ? (await env.DB.prepare('SELECT charge_description FROM charges WHERE detention_id = ?').bind(targetDetentionId).all()).results?.map((c: any) => c.charge_description) || [] : [];
+        const existingCorr = await env.DB.prepare('SELECT penpal FROM correspondence WHERE detainee_id = ? LIMIT 1').bind(detaineeId).first<any>();
+        const existingProc = await env.DB.prepare('SELECT lp.decision_date, lp.judge_ordered FROM legal_proceedings lp JOIN detentions d ON lp.detention_id = d.id WHERE d.detainee_id = ? LIMIT 1').bind(detaineeId).first<any>();
+
+        const diffs: { field: string; before: any; after: any }[] = [];
 
         // 1. Detainee profile updates
         const detaineeFields: Record<string, string> = {
@@ -843,8 +922,14 @@ export default {
         const detaineeParams: any[] = [];
         for (const [key, col] of Object.entries(detaineeFields)) {
           if (body[key] !== undefined) {
+            changedFields.push(key);
+            const newVal = body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null;
+            const oldVal = existingDetainee[col] ?? null;
+            if (String(oldVal ?? '') !== String(newVal ?? '')) {
+              diffs.push({ field: key, before: oldVal, after: newVal });
+            }
             detaineeUpdates.push(`${col} = ?`);
-            detaineeParams.push(body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null);
+            detaineeParams.push(newVal);
           }
         }
 
@@ -868,29 +953,28 @@ export default {
 
         const hasDetentionFields = Object.keys(detentionFields).some(k => body[k] !== undefined);
         const hasCharges = body.charges !== undefined;
+        let detentionEdited = false;
 
         if (hasDetentionFields || hasCharges) {
-          // Identify target detention (explicit ID or latest stay)
-          let targetDetentionId = body.detention_id;
-          if (!targetDetentionId) {
-            const latestStay = await env.DB.prepare(
-              'SELECT id FROM detentions WHERE detainee_id = ? ORDER BY book_date_gcj DESC, created_at DESC LIMIT 1'
-            ).bind(detaineeId).first<{ id: string }>();
-            targetDetentionId = latestStay?.id;
-          }
-
           if (targetDetentionId) {
             if (hasDetentionFields) {
               const detentionUpdates: string[] = [];
               const detentionParams: any[] = [];
               for (const [key, col] of Object.entries(detentionFields)) {
                 if (body[key] !== undefined) {
+                  changedFields.push(`detention_${key}`);
+                  const newVal = body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null;
+                  const oldVal = existingDetention ? existingDetention[col] ?? null : null;
+                  if (String(oldVal ?? '') !== String(newVal ?? '')) {
+                    diffs.push({ field: `detention_${key}`, before: oldVal, after: newVal });
+                  }
                   detentionUpdates.push(`${col} = ?`);
-                  detentionParams.push(body[key] !== null && String(body[key]).trim() !== '' ? String(body[key]).trim() : null);
+                  detentionParams.push(newVal);
                 }
               }
 
               if (detentionUpdates.length > 0) {
+                detentionEdited = true;
                 detentionParams.push(targetDetentionId);
                 statements.push(
                   env.DB.prepare(
@@ -902,13 +986,20 @@ export default {
 
             // Update charges if provided
             if (hasCharges) {
-              statements.push(
-                env.DB.prepare('DELETE FROM charges WHERE detention_id = ?').bind(targetDetentionId)
-              );
-
+              changedFields.push('charges');
               const rawCharges: string[] = Array.isArray(body.charges)
                 ? body.charges
                 : String(body.charges || '').split(/[;\n]/).map(c => c.trim()).filter(Boolean);
+
+              const oldChargesStr = existingCharges.join('; ');
+              const newChargesStr = rawCharges.join('; ');
+              if (oldChargesStr !== newChargesStr) {
+                diffs.push({ field: 'charges', before: oldChargesStr || null, after: newChargesStr || null });
+              }
+
+              statements.push(
+                env.DB.prepare('DELETE FROM charges WHERE detention_id = ?').bind(targetDetentionId)
+              );
 
               for (const ch of rawCharges) {
                 statements.push(
@@ -921,12 +1012,18 @@ export default {
 
         // 3. Correspondence (penpal) updates
         if (body.penpal !== undefined) {
+          changedFields.push('penpal');
           const penpalVal = body.penpal !== null && String(body.penpal).trim() !== '' ? String(body.penpal).trim() : null;
-          const existingCorr = await env.DB.prepare(
+          const oldPenpal = existingCorr?.penpal || null;
+          if (String(oldPenpal ?? '') !== String(penpalVal ?? '')) {
+            diffs.push({ field: 'penpal', before: oldPenpal, after: penpalVal });
+          }
+
+          const existingCorrRecord = await env.DB.prepare(
             'SELECT id FROM correspondence WHERE detainee_id = ? LIMIT 1'
           ).bind(detaineeId).first<{ id: number }>();
 
-          if (existingCorr) {
+          if (existingCorrRecord) {
             statements.push(
               env.DB.prepare('UPDATE correspondence SET penpal = ? WHERE detainee_id = ?').bind(penpalVal, detaineeId)
             );
@@ -937,16 +1034,24 @@ export default {
           }
         }
 
+        let legalModified = false;
         // 4. Legal Proceedings (decision_date) updates
         if (body.decision_date !== undefined) {
+          changedFields.push('decision_date');
+          legalModified = true;
           const decVal = body.decision_date !== null && String(body.decision_date).trim() !== '' ? String(body.decision_date).trim() : null;
-          const existingProc = await env.DB.prepare(
+          const oldDec = existingProc?.decision_date || null;
+          if (String(oldDec ?? '') !== String(decVal ?? '')) {
+            diffs.push({ field: 'decision_date', before: oldDec, after: decVal });
+          }
+
+          const existingProcRecord = await env.DB.prepare(
             'SELECT lp.id FROM legal_proceedings lp JOIN detentions d ON lp.detention_id = d.id WHERE d.detainee_id = ? LIMIT 1'
           ).bind(detaineeId).first<{ id: number }>();
 
-          if (existingProc) {
+          if (existingProcRecord) {
             statements.push(
-              env.DB.prepare('UPDATE legal_proceedings SET decision_date = ? WHERE id = ?').bind(decVal, existingProc.id)
+              env.DB.prepare('UPDATE legal_proceedings SET decision_date = ? WHERE id = ?').bind(decVal, existingProcRecord.id)
             );
           } else {
             const detentionForProc = await env.DB.prepare(
@@ -963,14 +1068,21 @@ export default {
 
         // 5. Legal Proceedings (judge_ordered) updates
         if (body.judge_ordered !== undefined) {
+          changedFields.push('judge_ordered');
+          legalModified = true;
           const judgeVal = body.judge_ordered !== null && String(body.judge_ordered).trim() !== '' ? normalizeJudgeOrdered(String(body.judge_ordered)) : null;
-          const existingProc = await env.DB.prepare(
+          const oldJudge = existingProc?.judge_ordered || null;
+          if (String(oldJudge ?? '') !== String(judgeVal ?? '')) {
+            diffs.push({ field: 'judge_ordered', before: oldJudge, after: judgeVal });
+          }
+
+          const existingProcRecord = await env.DB.prepare(
             'SELECT lp.id FROM legal_proceedings lp JOIN detentions d ON lp.detention_id = d.id WHERE d.detainee_id = ? LIMIT 1'
           ).bind(detaineeId).first<{ id: number }>();
 
-          if (existingProc) {
+          if (existingProcRecord) {
             statements.push(
-              env.DB.prepare('UPDATE legal_proceedings SET judge_ordered = ? WHERE id = ?').bind(judgeVal, existingProc.id)
+              env.DB.prepare('UPDATE legal_proceedings SET judge_ordered = ? WHERE id = ?').bind(judgeVal, existingProcRecord.id)
             );
           } else {
             const detentionForProc = await env.DB.prepare(
@@ -987,6 +1099,28 @@ export default {
 
         if (statements.length > 0) {
           await env.DB.batch(statements);
+
+          // Record audit logs for modified entity types with before/after diffs
+          if (detaineeUpdates.length > 0) {
+            const dDiffs = diffs.filter(d => ['name', 'jacket_number', 'country', 'age', 'sex', 'race', 'ice_case_number'].includes(d.field));
+            const first = dDiffs[0];
+            await recordAuditLog(env.DB, authUser, 'DETAINEE_UPDATED', detaineeId, { changedFields, diffs: dDiffs, field: first?.field, before: first?.before, after: first?.after }, request);
+          }
+          if (detentionEdited) {
+            const dtDiffs = diffs.filter(d => d.field.startsWith('detention_'));
+            const first = dtDiffs[0];
+            await recordAuditLog(env.DB, authUser, 'DETAINED_RECORD_EDITED', detaineeId, { changedFields, diffs: dtDiffs, field: first?.field, before: first?.before, after: first?.after }, request);
+          }
+          if (hasCharges) {
+            const chDiffs = diffs.filter(d => d.field === 'charges');
+            const first = chDiffs[0];
+            await recordAuditLog(env.DB, authUser, 'CHARGE_MODIFIED', detaineeId, { changedFields, diffs: chDiffs, field: 'charges', before: first?.before, after: first?.after }, request);
+          }
+          if (legalModified) {
+            const lgDiffs = diffs.filter(d => d.field === 'decision_date' || d.field === 'judge_ordered');
+            const first = lgDiffs[0];
+            await recordAuditLog(env.DB, authUser, 'LEGAL_PROCEEDING_MODIFIED', detaineeId, { changedFields, diffs: lgDiffs, field: first?.field, before: first?.before, after: first?.after }, request);
+          }
         }
 
         return new Response(JSON.stringify({ success: true, detaineeId }), { status: 200, headers: corsHeaders });
@@ -1202,6 +1336,9 @@ export default {
         }
 
         const analysis = await analyzeSpreadsheetRows(env.DB, category, rows);
+
+        await recordAuditLog(env.DB, authUser, 'INGESTION_ANALYZED', null, { category, rowCount: rows.length, flaggedCount: analysis.flaggedItems.length, cleanCount: analysis.cleanRows.length }, request);
+
         return new Response(JSON.stringify(analysis), { status: 200, headers: corsHeaders });
       }
 
@@ -1224,7 +1361,32 @@ export default {
           curatedDecisions
         });
 
+        await recordAuditLog(env.DB, authUser, 'CURATED_INGESTION_COMMITTED', null, { category, insertedDetainees: result.insertedDetainees, updatedDetainees: result.updatedDetainees }, request);
+
         return new Response(JSON.stringify(result), { status: 200, headers: corsHeaders });
+      }
+
+      // 10d. Data Export & Reports Endpoint (Analyst+)
+      if (path === '/api/export' && method === 'POST') {
+        if (authUser.role !== 'admin' && authUser.role !== 'analyst' && authUser.role !== 'viewer') {
+          return new Response(JSON.stringify({ error: 'Forbidden: Export requires authentication' }), { status: 403, headers: corsHeaders });
+        }
+
+        const body: any = await request.json();
+        const { format = 'json', entityType = 'detainees', filterCriteria = {} } = body;
+
+        let items: any[] = [];
+        if (entityType === 'detainees') {
+          items = (await env.DB.prepare('SELECT * FROM detainees ORDER BY created_at DESC LIMIT 1000').all()).results || [];
+        } else if (entityType === 'detentions') {
+          items = (await env.DB.prepare('SELECT * FROM detentions ORDER BY book_date_gcj DESC LIMIT 1000').all()).results || [];
+        } else {
+          items = (await env.DB.prepare('SELECT id, category, data_json as dataJson, created_at as createdAt FROM dynamic_records LIMIT 1000').all()).results || [];
+        }
+
+        await recordAuditLog(env.DB, authUser, 'DATA_EXPORTED', null, { format, entityType, rowCount: items.length, filterCriteria }, request);
+
+        return new Response(JSON.stringify({ format, entityType, rowCount: items.length, data: items }), { status: 200, headers: corsHeaders });
       }
 
       // 11. Batch Ingest & Relational Normalization (Analyst+)

@@ -104,6 +104,18 @@ CREATE TABLE IF NOT EXISTS failed_logins (
     last_attempt DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Immutable Audit Logs
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id TEXT,
+    actor_email TEXT,
+    action TEXT NOT NULL,
+    target_id TEXT,
+    metadata TEXT,
+    ip_address TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 5. Permanent Roll-up Snapshots (for historical metrics across retention sweeps)
 CREATE TABLE IF NOT EXISTS aggregate_rollups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,3 +144,6 @@ CREATE INDEX IF NOT EXISTS idx_dynamic_records_category ON dynamic_records(categ
 CREATE INDEX IF NOT EXISTS idx_users_invite_token ON users(invite_token);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_failed_logins_identifier ON failed_logins(identifier);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_id);
