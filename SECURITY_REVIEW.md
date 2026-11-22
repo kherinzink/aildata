@@ -7,7 +7,7 @@ Aildata implements a defense-in-depth security architecture tailored for edge de
 - **Brute-Force & Rate-Limit Protection:** Dedicated `failed_logins` tracking table handling account lockouts and attempt counters.
 - **SQL Injection Defense:** Parameterized queries (`.bind(...)`) across all Cloudflare D1 database operations.
 - **Origin-Restricted CORS:** Whitelisted origins replacing wildcard policies.
-- **Immutable Audit Logging:** Dedicated `audit_logs` tracking table capturing all security and administrative events.
+- **Immutable Audit Logging with Before/After Diffs:** Dedicated `audit_logs` tracking table capturing all security and administrative events with explicit field-level diff tracking.
 
 ---
 
@@ -30,12 +30,16 @@ Aildata implements a defense-in-depth security architecture tailored for edge de
 
 ---
 
-## 3. Audit Logging Subsystem
-To ensure accountability and non-repudiation, an immutable audit logging system has been introduced:
+## 3. Audit Logging Subsystem & Before/After Diffs
+To ensure accountability, compliance, and non-repudiation, an immutable audit logging system is integrated:
 - **Database Schema:** `audit_logs` table (`migrations/0007_audit_logs.sql`) tracking `actor_id`, `actor_email`, `action`, `target_id`, `metadata`, `ip_address`, and `created_at`.
+- **Before/After Diff Tracking:** 
+  - Captures exact field-level state transitions (`field`, `before`, `after`) for detainee profile updates, detention stays, charges, correspondence, legal proceedings, and administrator role/status modifications.
+  - Rendered inline directly in the Admin view (`AdminView.tsx`) with color-coded old vs. new values, plus a JSON metadata inspector modal.
 - **Tracked Events:**
   - Auth: `LOGIN_SUCCESS`, `LOGIN_FAILED`, `ACCOUNT_LOCKED`, `ACCOUNT_UNLOCKED`
   - User Lifecycle / RBAC: `USER_REGISTERED`, `USER_INVITED`, `USER_ACTIVATED`, `ROLE_CHANGED`, `STATUS_CHANGED`, `INVITE_RESET`, `PASSWORD_RESET`, `USER_DELETED`
+  - Record Edits: `DETAINEE_UPDATED`, `DETAINED_RECORD_EDITED`, `CHARGE_MODIFIED`, `LEGAL_PROCEEDING_MODIFIED`
   - System & Maintenance: `BATCH_INGESTION`, `DATABASE_RESET`, `CATEGORY_DELETED`, `RETENTION_PURGE`
 - **Admin Access:** `GET /api/admin/audit-logs` protected by strict `admin` RBAC checks with pagination and filtering.
 

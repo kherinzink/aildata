@@ -16,6 +16,8 @@ import {
   AuditLogEntry,
   getAdminUsers,
   getAuditLogs,
+  getRecords,
+  deleteCategoryRecords,
   updateUserRole,
   updateUserStatus,
   unlockUserAccount,
@@ -76,6 +78,11 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
   const [auditActionFilter, setAuditActionFilter] = useState<string>('ALL');
   const [selectedLogMetadata, setSelectedLogMetadata] = useState<AuditLogEntry | null>(null);
 
+  // State: Imported Spreadsheet Categories
+  const [categories, setCategories] = useState<{ category: string; count: number }[]>([]);
+  const [loadingCategories, setLoadingCategories] = useState<boolean>(true);
+  const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
+
   // Action busy indicators per user id
   const [busyUsers, setBusyUsers] = useState<Record<string, string>>({});
 
@@ -118,9 +125,62 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
     }
   };
 
+  const loadCategories = async (isSilent: boolean = false) => {
+    if (!isSilent) setLoadingCategories(true);
+    try {
+      const recs = await getRecords();
+      const map = new Map<string, number>();
+      recs.forEach(r => {
+        if (r && r.category) {
+          map.set(r.category, (map.get(r.category) || 0) + 1);
+        }
+      });
+      const list = Array.from(map.entries()).map(([category, count]) => ({ category, count }));
+      setCategories(list);
+    } catch (err: any) {
+      console.error('Failed to load categories:', err);
+    } finally {
+      if (!isSilent) setLoadingCategories(false);
+    }
+  };
+
+  const handleDeleteCategory = (category: string) => {
+    const confirmDelete = async () => {
+      setDeletingCategory(category);
+      setErrorMessage(null);
+      setSuccessMessage(null);
+      try {
+        await deleteCategoryRecords(category);
+        setSuccessMessage(`Successfully deleted imported spreadsheet category "${category}"`);
+        loadCategories(true);
+        if (onDataChanged) onDataChanged();
+      } catch (err: any) {
+        setErrorMessage(err.message || `Failed to delete category "${category}"`);
+      } finally {
+        setDeletingCategory(null);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Are you sure you want to delete imported spreadsheet category "${category}"? This will remove all staging records for this sheet.`)) {
+        confirmDelete();
+      }
+    } else {
+      Alert.alert(
+        'Delete Imported Sheet',
+        `Are you sure you want to delete category "${category}"?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: confirmDelete }
+        ]
+      );
+    }
+  };
+
   useEffect(() => {
     loadUsers();
     loadAuditLogs();
+    loadCategories();
   }, []);
 
   useEffect(() => {
@@ -131,6 +191,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
     setRefreshing(true);
     loadUsers(true);
     loadAuditLogs(true);
+    loadCategories(true);
   };
 
   // Metrics calculation
@@ -937,7 +998,59 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
         )}
       </View>
 
-      {/* Section 4: Data Lifecycle & Database Maintenance */}
+      {/* Section 4: Imported Spreadsheets & Category Management */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View>
+            <Text style={styles.cardTitle}>📁 Imported Spreadsheets & Categories</Text>
+            <Text style={styles.cardSubtitle}>
+              Manage and delete raw staging categories and imported spreadsheets.
+            </Text>
+          </View>
+          <Text style={styles.countBadge}>
+            {categories.length} categories
+          </Text>
+        </View>
+
+        {loadingCategories ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#2563eb" />
+            <Text style={styles.loadingText}>Loading spreadsheet categories...</Text>
+          </View>
+        ) : categories.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyTitle}>No imported spreadsheets found</Text>
+            <Text style={styles.emptySubtitle}>Import spreadsheets via the Ingestion tab to see them here.</Text>
+          </View>
+        ) : (
+          <View style={styles.tableContainer}>
+            {categories.map(cat => (
+              <View key={cat.category} style={styles.auditRow}>
+                <View style={{ flex: 2 }}>
+                  <Text style={styles.auditTime}>{cat.category}</Text>
+                  <Text style={styles.auditIp}>{cat.count} staging records</Text>
+                </View>
+
+                <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                  <TouchableOpacity
+                    style={[styles.clearButton, deletingCategory === cat.category && styles.disabledButton]}
+                    disabled={deletingCategory === cat.category}
+                    onPress={() => handleDeleteCategory(cat.category)}
+                  >
+                    {deletingCategory === cat.category ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Text style={styles.clearButtonText}>🗑️ Delete Category</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+
+      {/* Section 5: Data Lifecycle & Database Maintenance */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View>

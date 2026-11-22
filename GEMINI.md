@@ -1,6 +1,9 @@
 # Project Instructions & AI Efficiencies: Aildata
 
 ## 1. Fast Local Validation & Tooling Workflows
+- **Token-Efficient Automation Scripts (`scripts/`):** To avoid burning tokens on manual multi-step commands, always run the dedicated automation scripts:
+  - **Local CI & Validation:** `./scripts/test_ci.sh` (runs type checking and static web export).
+  - **Production Deployment:** `./scripts/deploy_prod.sh` (runs type check, web export, Cloudflare Worker deploy, and Cloudflare Pages static deploy).
 - **Type Checking (Fastest Check):** Always run `npx tsc --noEmit` to validate TypeScript changes across both frontend and worker.
 - **Web Export Validation:** Run `npm run build:web` (`npx expo export --platform web`) to verify bundling without launching persistent web servers.
 - **Package Installation Rule:** ALWAYS use `npx expo install <package>` instead of `npm install` or `yarn add` to ensure packages match Expo SDK 58 compatibility matrix.
