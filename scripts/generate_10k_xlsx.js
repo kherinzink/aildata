@@ -131,12 +131,12 @@ const CHARGES_POOL = [
 ];
 
 const PENPALS_POOL = [
-  "ACLU Volunteer - Maria S.",
-  "Community Legal Support Network",
-  "Family Support - Brother (Contacted)",
-  "Midwest Immigrant Defense Project",
-  "Penpal Coalition - Chicago Chapter",
-  "Faith Community Penpal Volunteer",
+  "Sarah",
+  "James",
+  "Brad",
+  "Tim",
+  "Susan",
+  "Tracy",
   "None", "None", "None", "None", "None", "None", "None", "None" // Majority None
 ];
 
@@ -251,17 +251,19 @@ for (let i = 1; i <= 10000; i++) {
 
   // Charges: realistic single or multi-charge combinations, or uncharged hold
   let chargeStr = '';
-  const chargeRoll = rand();
-  if (chargeRoll < 0.10) {
-    chargeStr = 'Administrative Immigrant Hold (No Formal Charges Filed)';
-  } else if (chargeRoll < 0.65) {
-    chargeStr = pick(CHARGES_POOL);
-  } else {
-    // Multi-charge combination
-    const c1 = pick(CHARGES_POOL);
-    let c2 = pick(CHARGES_POOL);
-    while (c2 === c1) c2 = pick(CHARGES_POOL);
-    chargeStr = `${c1}; ${c2}`;
+  if (rand() < 0.03) {
+    const chargeRoll = rand();
+    if (chargeRoll < 0.10) {
+      chargeStr = 'Administrative Immigrant Hold (No Formal Charges Filed)';
+    } else if (chargeRoll < 0.65) {
+      chargeStr = pick(CHARGES_POOL);
+    } else {
+      // Multi-charge combination
+      const c1 = pick(CHARGES_POOL);
+      let c2 = pick(CHARGES_POOL);
+      while (c2 === c1) c2 = pick(CHARGES_POOL);
+      chargeStr = `${c1}; ${c2}`;
+    }
   }
 
   const penpal = pick(PENPALS_POOL);
