@@ -39,3 +39,8 @@
 - **Analyst Routes:** `POST /api/records/batch` (spreadsheet ingestion).
 - **Admin Routes:** User management (`GET /api/admin/users`, `PATCH /api/admin/users/:id/role`, `PATCH /api/admin/users/:id/status`, `POST /api/admin/users/:id/unlock`, `POST /api/admin/users/:id/reset-invite`, `POST /api/admin/users/:id/password`, `DELETE /api/admin/users/:id`), category deletion (`DELETE /api/records/category/:cat`), database reset (`DELETE /api/records`), and maintenance purge (`POST /api/maintenance/purge`).
 
+## 5. Documentation & Security Enhancement Mandates
+- **Documentation Updates:** Any new functionality designed or implemented by Gemini must be followed up by corresponding documentation updates for the repository (e.g., updating `TECHNICAL_ARCHITECTURE.md`, `SECURITY_REVIEW.md`, or relevant documentation guides).
+- **Security & Audit Enhancements:** Any code changes or new features that should be enhanced with security hardening, RBAC checks, or immutable audit logging (`audit_logs`) must be proactively brought up and incorporated.
+
+

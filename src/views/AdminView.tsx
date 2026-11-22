@@ -575,7 +575,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
       {/* Section 1: Invite / Provision New User */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <View>
+          <View style={{ flex: 1, minWidth: 220 }}>
             <Text style={styles.cardTitle}>➕ Provision & Invite Users</Text>
             <Text style={styles.cardSubtitle}>
               Invite team members via a 7-day self-service activation link, or provision directly.
@@ -641,7 +641,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
       {/* Section 2: User Directory & Security Management */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <View>
+          <View style={{ flex: 1, minWidth: 220 }}>
             <Text style={styles.cardTitle}>👥 Team Directory & Access Control</Text>
             <Text style={styles.cardSubtitle}>
               Manage permissions, suspend/reactivate accounts, clear failed login locks, and re-issue credentials.
@@ -869,7 +869,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
       {/* Section 3: Immutable Security & Admin Audit Logs */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <View>
+          <View style={{ flex: 1, minWidth: 220 }}>
             <Text style={styles.cardTitle}>📋 Immutable Security & Admin Audit Logs</Text>
             <Text style={styles.cardSubtitle}>
               Monitor security events, authentication attempts, and administrative actions.
@@ -882,7 +882,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
 
         {/* Action Filter Toolbar */}
         <View style={styles.toolbar}>
-          <View style={styles.filterGroup}>
+          <View style={[styles.filterGroup, { flexWrap: 'wrap' }]}>
             <Text style={styles.filterLabel}>Filter Action:</Text>
             {(['ALL', 'LOGIN_SUCCESS', 'LOGIN_FAILED', 'USER_REGISTERED', 'ROLE_UPDATED', 'ACCOUNT_SUSPENDED', 'RETENTION_PURGE', 'DATABASE_CLEARED'] as const).map(act => (
               <TouchableOpacity
@@ -913,20 +913,20 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
           <View style={styles.tableContainer}>
             {auditLogs.map(log => (
               <View key={log.id} style={styles.auditRow}>
-                <View style={{ flex: 1.5 }}>
+                <View style={{ flex: 1.5, minWidth: 160 }}>
                   <Text style={styles.auditTime}>
                     {log.created_at ? new Date(log.created_at).toLocaleString() : 'N/A'}
                   </Text>
                   <Text style={styles.auditIp}>IP: {log.ip_address || 'unknown'}</Text>
                 </View>
 
-                <View style={{ flex: 1.5 }}>
+                <View style={{ flex: 1.5, minWidth: 140 }}>
                   <View style={styles.auditActionBadge}>
                     <Text style={styles.auditActionText}>{log.action}</Text>
                   </View>
                 </View>
 
-                <View style={{ flex: 2.5 }}>
+                <View style={{ flex: 3, minWidth: 240 }}>
                   <Text style={styles.auditActor} numberOfLines={1}>{log.actor_email || 'System'}</Text>
                   {log.target_id && (
                     <Text style={styles.auditTarget} numberOfLines={1}>Target: {log.target_id}</Text>
@@ -980,7 +980,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
                   })()}
                 </View>
 
-                <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                <View style={{ flex: 1, minWidth: 80, alignItems: 'flex-end' }}>
                   {log.metadata ? (
                     <TouchableOpacity
                       style={styles.metadataButton}
@@ -1001,7 +1001,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
       {/* Section 4: Imported Spreadsheets & Category Management */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <View>
+          <View style={{ flex: 1, minWidth: 220 }}>
             <Text style={styles.cardTitle}>📁 Imported Spreadsheets & Categories</Text>
             <Text style={styles.cardSubtitle}>
               Manage and delete raw staging categories and imported spreadsheets.
@@ -1053,7 +1053,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
       {/* Section 5: Data Lifecycle & Database Maintenance */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <View>
+          <View style={{ flex: 1, minWidth: 220 }}>
             <Text style={styles.cardTitle}>⚙️ Data Lifecycle & Maintenance</Text>
             <Text style={styles.cardSubtitle}>
               Execute automated 1-year retention rollups or perform database resets.
@@ -1266,7 +1266,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
 const styles = StyleSheet.create({
   auditRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 12,
     paddingHorizontal: 8,
     borderBottomWidth: 1,
