@@ -810,6 +810,25 @@ export default {
         const limit = limitParam ? Math.min(parseInt(limitParam, 10), 1000) : 100;
         const offset = parseInt(url.searchParams.get('offset') || '0', 10);
         const search = url.searchParams.get('search')?.toLowerCase().trim();
+        const sortBy = url.searchParams.get('sortBy');
+        const sortOrder = url.searchParams.get('sortOrder')?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+        const validSortColumns: Record<string, string> = {
+          name: 'd.name',
+          jacket_number: 'd.jacket_number',
+          country: 'd.country',
+          age: 'd.age',
+          sex: 'd.sex',
+          book_date_gcj: 'dt.book_date_gcj',
+          departure_date: 'dt.departure_date',
+          delivering_agency: 'dt.delivering_agency',
+          charges: 'charges_summary',
+          judge_ordered: 'judge_ordered',
+          penpal: 'penpal',
+          created_at: 'd.created_at'
+        };
+
+        const sortCol = sortBy && validSortColumns[sortBy] ? validSortColumns[sortBy] : 'd.created_at';
 
         let query = `
           SELECT 
@@ -839,10 +858,10 @@ export default {
         let stmt;
         if (search) {
           query += ` WHERE LOWER(d.name) LIKE ? OR d.jacket_number LIKE ? OR d.ice_case_number LIKE ? OR LOWER(d.country) LIKE ?`;
-          query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?;`;
+          query += ` ORDER BY ${sortCol} ${sortOrder}, d.created_at DESC LIMIT ? OFFSET ?;`;
           stmt = env.DB.prepare(query).bind(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, limit, offset);
         } else {
-          query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?;`;
+          query += ` ORDER BY ${sortCol} ${sortOrder}, d.created_at DESC LIMIT ? OFFSET ?;`;
           stmt = env.DB.prepare(query).bind(limit, offset);
         }
 

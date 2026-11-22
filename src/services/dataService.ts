@@ -482,11 +482,13 @@ export interface DetaineeListResponse {
   total: number;
 }
 
-export async function getDetainees(params?: { search?: string; limit?: number; offset?: number }): Promise<DetaineeListResponse> {
+export async function getDetainees(params?: { search?: string; limit?: number; offset?: number; sortBy?: string; sortOrder?: 'asc' | 'desc' }): Promise<DetaineeListResponse> {
   const query = new URLSearchParams();
   if (params?.search) query.set('search', params.search);
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.offset) query.set('offset', String(params.offset));
+  if (params?.sortBy) query.set('sortBy', params.sortBy);
+  if (params?.sortOrder) query.set('sortOrder', params.sortOrder);
 
   const url = `${API_URL}/api/detainees${query.toString() ? '?' + query.toString() : ''}`;
   const res = await apiFetch(url);

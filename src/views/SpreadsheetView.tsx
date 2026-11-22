@@ -81,13 +81,17 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Fetch normalized detainees
-  const loadNormalizedDetainees = async (page = currentPage, query = searchQuery) => {
+  const loadNormalizedDetainees = async (page = currentPage, query = searchQuery, field = sortField, asc = sortAsc) => {
     try {
       setNormalizedLoading(true);
+      const sortBy = field ? COLUMN_FIELD_MAP[field] || field : undefined;
+      const sortOrder = asc ? 'asc' : 'desc';
       const res = await getDetainees({
         limit: PAGE_SIZE,
         offset: (page - 1) * PAGE_SIZE,
-        search: query || undefined
+        search: query || undefined,
+        sortBy,
+        sortOrder
       });
       const results = Array.isArray(res?.results) ? res.results : [];
       setNormalizedDetainees(results);
@@ -105,9 +109,9 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
       setNormalizedDetainees([]);
       setTotalCount(0);
     } else {
-      loadNormalizedDetainees(currentPage, searchQuery);
+      loadNormalizedDetainees(currentPage, searchQuery, sortField, sortAsc);
     }
-  }, [records, currentPage, searchQuery]);
+  }, [records, currentPage, searchQuery, sortField, sortAsc]);
 
   // Normalized rows
   const activeRows = useMemo(() => {
