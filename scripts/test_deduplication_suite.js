@@ -309,7 +309,8 @@ async function runTestSuite() {
   const detaineesRes = await fetch(`${API_URL}/api/detainees`, {
     headers: { Authorization: `Bearer ${token}` }
   });
-  const detaineesData = await detaineesRes.json();
+  const detaineesDataRaw = await detaineesRes.json();
+  const detaineesData = Array.isArray(detaineesDataRaw) ? detaineesDataRaw : (detaineesDataRaw.results || []);
   console.log(`\nVerified Total Detainees in DB: ${detaineesData.length} (Expected 4)`);
   if (detaineesData.length !== 4) {
     throw new Error(`Expected exactly 4 detainees in DB, found ${detaineesData.length}`);

@@ -535,14 +535,40 @@ export async function runRetentionPurge(): Promise<any> {
   return data;
 }
 
-export async function clearDatabase(): Promise<void> {
-  const res = await apiFetch(`${API_URL}/api/records`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to clear database via Cloudflare D1 API');
+export interface CategoryBreakdown {
+  category: string;
+  stagingCount: number;
+  detentionCount: number;
 }
 
-export async function deleteCategoryRecords(category: string): Promise<void> {
-  const res = await apiFetch(`${API_URL}/api/records/category/${encodeURIComponent(category)}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete category records via Cloudflare D1 API');
+export async function getSpreadsheetCategories(): Promise<CategoryBreakdown[]> {
+  const res = await apiFetch(`${API_URL}/api/records/categories`);
+  if (!res.ok) throw new Error('Failed to fetch spreadsheet categories');
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    return data.map((r: any) => ({
+      category: r.category,
+      stagingCount: Number(r.stagingCount || 0),
+      detentionCount: Number(r.detentionCount || 0)
+    }));
+  }
+  return [];
+}
+
+export async function clearDatabase(scope: 'all' | 'staging' | 'relational' = 'all'): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/records?scope=${encodeURIComponent(scope)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Failed to clear database via Cloudflare D1 API');
+  }
+}
+
+export async function deleteCategoryRecords(category: string, scope: 'staging' | 'relational' | 'all' = 'all'): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/records/category/${encodeURIComponent(category)}?scope=${encodeURIComponent(scope)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Failed to delete category records via Cloudflare D1 API');
+  }
 }
 
 export async function getTableNames(): Promise<string[]> {

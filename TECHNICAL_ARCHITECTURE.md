@@ -95,10 +95,11 @@ To balance historical data retention with privacy and storage efficiency:
 | `POST /api/admin/users/:id/password` | **Admin** | Direct manual password reset with per-user salt generation |
 | `DELETE /api/admin/users/:id` | **Admin** | Permanently deletes user account with self/sole-admin protections |
 | `GET /api/records` | Viewer | Returns raw dynamic records (supports `?category=`) |
+| `GET /api/records/categories` | Viewer | Returns category breakdown with staging and relational counts |
 | `GET /api/detainees` | Viewer | Returns normalized subjects joined with latest detention summary |
 | `GET /api/detainees/:id` | Viewer | Returns full master-detail relational profile |
 | `GET /api/stats` | Viewer | Returns server-side SQL analytics and live entity counts |
 | `POST /api/records/batch` | **Analyst** | Batch-ingests rows into raw staging and normalized relational tables |
-| `DELETE /api/records/category/:cat` | **Admin** | Deletes all records belonging to an imported sheet category |
-| `DELETE /api/records` | **Admin** | Clears all dynamic records and cascades relational entities |
+| `DELETE /api/records/category/:cat` | **Admin** | Deletes category records (supports `?scope=staging`, `?scope=relational`, `?scope=all`) |
+| `DELETE /api/records` | **Admin** | Clears database records (supports `?scope=staging`, `?scope=relational`, `?scope=all`) |
 | `POST /api/maintenance/purge` | **Admin** | Manually triggers the 1-year rollup snapshot and purge job |

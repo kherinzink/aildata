@@ -17,6 +17,8 @@ import {
   getAdminUsers,
   getAuditLogs,
   getRecords,
+  getSpreadsheetCategories,
+  CategoryBreakdown,
   deleteCategoryRecords,
   updateUserRole,
   updateUserStatus,
@@ -34,6 +36,52 @@ interface AdminViewProps {
   currentUser?: { email?: string | null; role?: string | null } | null;
   onDataChanged?: () => void;
 }
+
+const parseUTCDate = (dateStr?: string | null): Date | null => {
+  if (!dateStr) return null;
+  let s = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/.test(s)) {
+    s = s.replace(' ', 'T') + 'Z';
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(s)) {
+    s = s + 'Z';
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+const formatCSTDate = (dateStr?: string | null) => {
+  const d = parseUTCDate(dateStr);
+  if (!d) return 'N/A';
+  try {
+    return d.toLocaleDateString('en-US', {
+      timeZone: 'America/Chicago',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return dateStr || 'N/A';
+  }
+};
+
+const formatCSTDateTime = (dateStr?: string | null) => {
+  const d = parseUTCDate(dateStr);
+  if (!d) return 'N/A';
+  try {
+    return d.toLocaleString('en-US', {
+      timeZone: 'America/Chicago',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return dateStr || 'N/A';
+  }
+};
 
 export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
   // State: User Directory
@@ -70,7 +118,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
   // State: Retention & DB Maintenance
   const [purgeLoading, setPurgeLoading] = useState<boolean>(false);
   const [purgeResult, setPurgeResult] = useState<string | null>(null);
-  const [clearLoading, setClearLoading] = useState<boolean>(false);
+  const [activeMaintenanceAction, setActiveMaintenanceAction] = useState<'staging' | 'relational' | 'all' | null>(null);
 
   // State: Audit Logs
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
@@ -79,9 +127,9 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
   const [selectedLogMetadata, setSelectedLogMetadata] = useState<AuditLogEntry | null>(null);
 
   // State: Imported Spreadsheet Categories
-  const [categories, setCategories] = useState<{ category: string; count: number }[]>([]);
+  const [categories, setCategories] = useState<CategoryBreakdown[]>([]);
   const [loadingCategories, setLoadingCategories] = useState<boolean>(true);
-  const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
+  const [deletingCategoryAction, setDeletingCategoryAction] = useState<{ category: string; scope: 'staging' | 'relational' } | null>(null);
 
   // Action busy indicators per user id
   const [busyUsers, setBusyUsers] = useState<Record<string, string>>({});
@@ -128,14 +176,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
   const loadCategories = async (isSilent: boolean = false) => {
     if (!isSilent) setLoadingCategories(true);
     try {
-      const recs = await getRecords();
-      const map = new Map<string, number>();
-      recs.forEach(r => {
-        if (r && r.category) {
-          map.set(r.category, (map.get(r.category) || 0) + 1);
-        }
-      });
-      const list = Array.from(map.entries()).map(([category, count]) => ({ category, count }));
+      const list = await getSpreadsheetCategories();
       setCategories(list);
     } catch (err: any) {
       console.error('Failed to load categories:', err);
@@ -144,34 +185,71 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
     }
   };
 
-  const handleDeleteCategory = (category: string) => {
+  const handleDeleteCategoryStaging = (category: string) => {
     const confirmDelete = async () => {
-      setDeletingCategory(category);
+      setDeletingCategoryAction({ category, scope: 'staging' });
       setErrorMessage(null);
       setSuccessMessage(null);
       try {
-        await deleteCategoryRecords(category);
-        setSuccessMessage(`Successfully deleted imported spreadsheet category "${category}"`);
+        await deleteCategoryRecords(category, 'staging');
+        setSuccessMessage(`Successfully deleted staging for "${category}". Relational records have been safely orphaned and preserved in the database.`);
         loadCategories(true);
         if (onDataChanged) onDataChanged();
       } catch (err: any) {
-        setErrorMessage(err.message || `Failed to delete category "${category}"`);
+        setErrorMessage(err.message || `Failed to clear staging records for "${category}"`);
       } finally {
-        setDeletingCategory(null);
+        setDeletingCategoryAction(null);
       }
     };
 
+    const promptMsg = `Clear Staging Records:\n\nAre you sure you want to delete raw staging records for spreadsheet "${category}"?\n\n• Clears raw dynamic_records staging data and removes this spreadsheet from the imported list.\n• ALL normalized detainees, detentions, and charges remain safely in the database (safely orphaned as permanent records).`;
+
     if (Platform.OS === 'web') {
-      if (window.confirm(`Are you sure you want to delete imported spreadsheet category "${category}"? This will remove all staging records for this sheet.`)) {
+      if (window.confirm(promptMsg)) {
         confirmDelete();
       }
     } else {
       Alert.alert(
-        'Delete Imported Sheet',
-        `Are you sure you want to delete category "${category}"?`,
+        'Clear Staging Records',
+        promptMsg,
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: confirmDelete }
+          { text: 'Clear Staging', style: 'destructive', onPress: confirmDelete }
+        ]
+      );
+    }
+  };
+
+  const handleDeleteCategoryRelational = (category: string) => {
+    const confirmDelete = async () => {
+      setDeletingCategoryAction({ category, scope: 'relational' });
+      setErrorMessage(null);
+      setSuccessMessage(null);
+      try {
+        await deleteCategoryRecords(category, 'relational');
+        setSuccessMessage(`Successfully deleted relational records for "${category}". Raw staging records remain intact.`);
+        loadCategories(true);
+        if (onDataChanged) onDataChanged();
+      } catch (err: any) {
+        setErrorMessage(err.message || `Failed to delete relational records for "${category}"`);
+      } finally {
+        setDeletingCategoryAction(null);
+      }
+    };
+
+    const promptMsg = `WARNING: Delete Relational Records:\n\nAre you sure you want to delete normalized relational records for "${category}"?\n\n• Permanently removes detentions, charges, legal proceedings, and orphaned detainees associated with this category.\n• Raw staging records in dynamic_records will remain intact.`;
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(promptMsg)) {
+        confirmDelete();
+      }
+    } else {
+      Alert.alert(
+        'Delete Relational Records',
+        promptMsg,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete Relational', style: 'destructive', onPress: confirmDelete }
         ]
       );
     }
@@ -439,22 +517,60 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
     }
   };
 
-  const handleClearDatabase = async () => {
-    const msg = 'CRITICAL WARNING: This will permanently delete ALL detainee profiles, charges, detentions, correspondence, and dynamic records. Are you completely sure?';
+  const handlePurgeAllStaging = async () => {
+    const msg = 'Are you sure you want to purge ALL raw staging records across all spreadsheets?\n\n• Clears dynamic_records staging data and removes all spreadsheets from the active import list.\n• ALL normalized detainee profiles, charges, detentions, and rollups remain 100% intact as permanent records.';
+    if (Platform.OS === 'web') {
+      if (!window.confirm(msg)) return;
+    }
+    setActiveMaintenanceAction('staging');
+    try {
+      await clearDatabase('staging');
+      Alert.alert('Staging Purged', 'All raw spreadsheet staging records have been cleared. Relational records remain safely orphaned and fully intact.');
+      loadCategories(true);
+      if (onDataChanged) onDataChanged();
+    } catch (err: any) {
+      Alert.alert('Purge Failed', err.message || 'Failed to purge staging records.');
+    } finally {
+      setActiveMaintenanceAction(null);
+    }
+  };
+
+  const handleClearNormalized = async () => {
+    const msg = 'CRITICAL WARNING: This will permanently delete ALL normalized detainee profiles, charges, detentions, legal proceedings, and correspondence.\n\n• Raw staging imports in dynamic_records will remain intact.\n• Are you sure?';
     if (Platform.OS === 'web') {
       if (!window.confirm(msg)) return;
       if (!window.confirm('Please confirm a second time: This cannot be undone.')) return;
     }
-    setClearLoading(true);
+    setActiveMaintenanceAction('relational');
     try {
-      await clearDatabase();
-      Alert.alert('Database Reset', 'All dynamic records and relational entities have been wiped.');
+      await clearDatabase('relational');
+      Alert.alert('Normalized Database Cleared', 'All normalized detainee profiles and relational entities have been wiped. Staging imports remain preserved.');
+      loadCategories(true);
+      if (onDataChanged) onDataChanged();
+    } catch (err: any) {
+      Alert.alert('Clear Failed', err.message || 'Failed to clear normalized records.');
+    } finally {
+      setActiveMaintenanceAction(null);
+    }
+  };
+
+  const handleFullReset = async () => {
+    const msg = 'CRITICAL WARNING: This will permanently delete ALL detainee profiles, charges, detentions, correspondence, AND dynamic staging records.\n\nAre you completely sure?';
+    if (Platform.OS === 'web') {
+      if (!window.confirm(msg)) return;
+      if (!window.confirm('FINAL CONFIRMATION: Type OK or press Enter to completely erase all data records. Admin users and audit logs will be kept.')) return;
+    }
+    setActiveMaintenanceAction('all');
+    try {
+      await clearDatabase('all');
+      Alert.alert('Database Reset', 'All dynamic staging records and relational entities have been wiped.');
+      loadCategories(true);
       if (onDataChanged) onDataChanged();
       await loadUsers(true);
     } catch (err: any) {
       Alert.alert('Reset Failed', err.message || 'Database reset failed.');
     } finally {
-      setClearLoading(false);
+      setActiveMaintenanceAction(null);
     }
   };
 
@@ -770,7 +886,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
 
                     {/* Metadata Subtitle */}
                     <Text style={styles.userMeta}>
-                      Created: {user.created_at ? new Date(user.created_at).toLocaleDateString() : 'N/A'} • Last Login: {user.last_login ? new Date(user.last_login).toLocaleString() : 'Never'}
+                      Created: {formatCSTDate(user.created_at)} • Last Login: {user.last_login ? formatCSTDateTime(user.last_login) : 'Never'}
                     </Text>
                   </View>
 
@@ -915,7 +1031,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
               <View key={log.id} style={styles.auditRow}>
                 <View style={{ flex: 1.5, minWidth: 160 }}>
                   <Text style={styles.auditTime}>
-                    {log.created_at ? new Date(log.created_at).toLocaleString() : 'N/A'}
+                    {formatCSTDateTime(log.created_at)}
                   </Text>
                   <Text style={styles.auditIp}>IP: {log.ip_address || 'unknown'}</Text>
                 </View>
@@ -1004,7 +1120,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
           <View style={{ flex: 1, minWidth: 220 }}>
             <Text style={styles.cardTitle}>📁 Imported Spreadsheets & Categories</Text>
             <Text style={styles.cardSubtitle}>
-              Manage and delete raw staging categories and imported spreadsheets.
+              Manage active spreadsheet staging uploads. Deleting staging removes the sheet from this list and safely orphans normalized records into permanent entries.
             </Text>
           </View>
           <Text style={styles.countBadge}>
@@ -1024,28 +1140,63 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
           </View>
         ) : (
           <View style={styles.tableContainer}>
-            {categories.map(cat => (
-              <View key={cat.category} style={styles.auditRow}>
-                <View style={{ flex: 2 }}>
-                  <Text style={styles.auditTime}>{cat.category}</Text>
-                  <Text style={styles.auditIp}>{cat.count} staging records</Text>
-                </View>
+            {categories.map(cat => {
+              const isDeletingStaging = deletingCategoryAction?.category === cat.category && deletingCategoryAction?.scope === 'staging';
+              const isDeletingRelational = deletingCategoryAction?.category === cat.category && deletingCategoryAction?.scope === 'relational';
+              const isBusy = deletingCategoryAction?.category === cat.category;
 
-                <View style={{ flex: 1, alignItems: 'flex-end' }}>
-                  <TouchableOpacity
-                    style={[styles.clearButton, deletingCategory === cat.category && styles.disabledButton]}
-                    disabled={deletingCategory === cat.category}
-                    onPress={() => handleDeleteCategory(cat.category)}
-                  >
-                    {deletingCategory === cat.category ? (
-                      <ActivityIndicator color="#fff" size="small" />
-                    ) : (
-                      <Text style={styles.clearButtonText}>🗑️ Delete Category</Text>
-                    )}
-                  </TouchableOpacity>
+              return (
+                <View key={cat.category} style={styles.categoryRow}>
+                  <View style={{ flex: 1, minWidth: 200 }}>
+                    <Text style={styles.categoryName}>{cat.category}</Text>
+                    <View style={styles.categoryBadgeRow}>
+                      <View style={[styles.statusBadge, cat.stagingCount > 0 ? styles.badgeStagingActive : styles.badgeInactive]}>
+                        <Text style={[styles.statusBadgeText, cat.stagingCount > 0 ? styles.badgeStagingText : styles.badgeInactiveText]}>
+                          📦 Staging: {cat.stagingCount.toLocaleString()}
+                        </Text>
+                      </View>
+                      <View style={[styles.statusBadge, cat.detentionCount > 0 ? styles.badgeRelationalActive : styles.badgeInactive]}>
+                        <Text style={[styles.statusBadgeText, cat.detentionCount > 0 ? styles.badgeRelationalText : styles.badgeInactiveText]}>
+                          🗄️ Relational: {cat.detentionCount.toLocaleString()}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.categoryActionsRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.deleteStagingBtn,
+                        (cat.stagingCount === 0 || isBusy) && styles.disabledButton
+                      ]}
+                      disabled={cat.stagingCount === 0 || isBusy}
+                      onPress={() => handleDeleteCategoryStaging(cat.category)}
+                    >
+                      {isDeletingStaging ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={styles.deleteStagingBtnText}>🗑️ Delete Staging</Text>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.deleteRelationalBtn,
+                        (cat.detentionCount === 0 || isBusy) && styles.disabledButton
+                      ]}
+                      disabled={cat.detentionCount === 0 || isBusy}
+                      onPress={() => handleDeleteCategoryRelational(cat.category)}
+                    >
+                      {isDeletingRelational ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={styles.deleteRelationalBtnText}>🗑️ Delete Relational</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            ))}
+              );
+            })}
           </View>
         )}
       </View>
@@ -1056,7 +1207,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
           <View style={{ flex: 1, minWidth: 220 }}>
             <Text style={styles.cardTitle}>⚙️ Data Lifecycle & Maintenance</Text>
             <Text style={styles.cardSubtitle}>
-              Execute automated 1-year retention rollups or perform database resets.
+              Execute automated retention rollups, purge raw staging records, or perform targeted database clears.
             </Text>
           </View>
         </View>
@@ -1068,6 +1219,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
         )}
 
         <View style={styles.maintenanceRow}>
+          {/* 1. Retention Purge */}
           <View style={styles.maintenanceCol}>
             <Text style={styles.maintenanceHeading}>1-Year Retention Policy Sweep</Text>
             <Text style={styles.maintenanceDesc}>
@@ -1081,25 +1233,64 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
               {purgeLoading ? (
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
-                <Text style={styles.purgeButtonText}>🧹 Run 1-Year Retention Purge & Rollup</Text>
+                <Text style={styles.purgeButtonText}>🧹 Run 1-Year Retention Sweep</Text>
               )}
             </TouchableOpacity>
           </View>
 
-          <View style={[styles.maintenanceCol, { borderTopWidth: Platform.OS === 'web' ? 0 : 1, borderTopColor: '#e2e8f0' }]}>
-            <Text style={styles.maintenanceHeading}>Database Reset (Destructive)</Text>
+          {/* 2. Purge All Staging */}
+          <View style={styles.maintenanceCol}>
+            <Text style={styles.maintenanceHeading}>Purge All Staging Records Only</Text>
             <Text style={styles.maintenanceDesc}>
-              Clears all dynamic records and cascades through all normalized tables (detainees, charges, detentions, correspondence).
+              Clears all raw unparsed staging rows in dynamic_records. Normalized detainee profiles, bookings, charges, and rollups remain 100% intact.
             </Text>
             <TouchableOpacity
-              style={[styles.clearButton, clearLoading && styles.disabledButton]}
-              disabled={clearLoading}
-              onPress={handleClearDatabase}
+              style={[styles.stagingPurgeButton, activeMaintenanceAction === 'staging' && styles.disabledButton]}
+              disabled={activeMaintenanceAction !== null}
+              onPress={handlePurgeAllStaging}
             >
-              {clearLoading ? (
+              {activeMaintenanceAction === 'staging' ? (
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
-                <Text style={styles.clearButtonText}>🗑️ Clear Database Records</Text>
+                <Text style={styles.stagingPurgeButtonText}>📦 Purge All Staging Only</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* 3. Clear Normalized Relational */}
+          <View style={styles.maintenanceCol}>
+            <Text style={styles.maintenanceHeading}>Clear Normalized Database Only</Text>
+            <Text style={styles.maintenanceDesc}>
+              Clears all normalized detainee profiles, charges, detentions, and correspondence. Raw spreadsheet staging records remain intact for re-processing.
+            </Text>
+            <TouchableOpacity
+              style={[styles.relationalClearButton, activeMaintenanceAction === 'relational' && styles.disabledButton]}
+              disabled={activeMaintenanceAction !== null}
+              onPress={handleClearNormalized}
+            >
+              {activeMaintenanceAction === 'relational' ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.relationalClearButtonText}>🗄️ Clear Normalized Only</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* 4. Full Database Reset */}
+          <View style={styles.maintenanceCol}>
+            <Text style={styles.maintenanceHeading}>Full Database Reset (Destructive)</Text>
+            <Text style={styles.maintenanceDesc}>
+              Clears both raw dynamic_records and all normalized relational tables (detainees, charges, detentions, correspondence). User accounts and audit logs are preserved.
+            </Text>
+            <TouchableOpacity
+              style={[styles.fullResetButton, activeMaintenanceAction === 'all' && styles.disabledButton]}
+              disabled={activeMaintenanceAction !== null}
+              onPress={handleFullReset}
+            >
+              {activeMaintenanceAction === 'all' ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.fullResetButtonText}>🗑️ Full Database Reset</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -1234,6 +1425,7 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
                 style={styles.metadataJsonText}
                 multiline
                 editable={false}
+                numberOfLines={10}
                 value={
                   selectedLogMetadata?.metadata
                     ? (() => {
@@ -1331,13 +1523,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#0f172a',
     borderRadius: 8,
     padding: 12,
-    maxHeight: 300,
+    maxHeight: 400,
+    minHeight: 220,
     marginTop: 8,
   },
   metadataJsonText: {
     color: '#e2e8f0',
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     fontSize: 12,
+    minHeight: 200,
+    textAlignVertical: 'top',
   },
   container: {
     padding: 24,
@@ -1999,6 +2194,135 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontWeight: '700',
     fontSize: 13,
+  },
+  stagingPurgeButton: {
+    backgroundColor: '#d97706',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  stagingPurgeButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  relationalClearButton: {
+    backgroundColor: '#dc2626',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  relationalClearButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  fullResetButton: {
+    backgroundColor: '#991b1b',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  fullResetButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  categoryRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+    gap: 12,
+  },
+  categoryName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1e293b',
+  },
+  categoryBadgeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  badgeStagingActive: {
+    backgroundColor: '#fffbeb',
+    borderColor: '#fde68a',
+  },
+  badgeStagingText: {
+    color: '#b45309',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  badgeRelationalActive: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  badgeRelationalText: {
+    color: '#1d4ed8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  badgeInactive: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
+  },
+  badgeInactiveText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  categoryActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  deleteStagingBtn: {
+    backgroundColor: '#d97706',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 110,
+  },
+  deleteStagingBtnText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  deleteRelationalBtn: {
+    backgroundColor: '#dc2626',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 125,
+  },
+  deleteRelationalBtnText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 12,
   },
   disabledButton: {
     opacity: 0.5,

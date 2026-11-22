@@ -27,6 +27,19 @@ function isDateColumn(colName: string): boolean {
   return lower.includes('date') || lower === 'book date' || lower === 'departure date';
 }
 
+function getColumnWidth(colName: string): number {
+  switch (colName) {
+    case 'Jacket #':
+    case 'Age':
+    case 'Sex':
+    case 'Book Date':
+    case 'Departure Date':
+      return 90;
+    default:
+      return 180;
+  }
+}
+
 function formatCell(val: any): string {
   if (val === null || val === undefined) return '';
   if (typeof val === 'number' && val > 30000 && val < 60000) {
@@ -42,8 +55,6 @@ function formatCell(val: any): string {
 const PAGE_SIZE = 100;
 
 export function SpreadsheetView({ records }: SpreadsheetViewProps) {
-  // Mode: 'normalized' or 'all' or 'import_<sheetName>'
-  const [selectedDataset, setSelectedDataset] = useState<string>('normalized');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortAsc, setSortAsc] = useState(true);
@@ -69,11 +80,6 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   const [savingCellKey, setSavingCellKey] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Date Range Filter State
-  const [dateFilterField, setDateFilterField] = useState<'none' | 'book_date' | 'departure_date'>('none');
-  const [dateFilterStart, setDateFilterStart] = useState<string>('');
-  const [dateFilterEnd, setDateFilterEnd] = useState<string>('');
-
   // Fetch normalized detainees
   const loadNormalizedDetainees = async (page = currentPage, query = searchQuery) => {
     try {
@@ -95,36 +101,16 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
   };
 
   useEffect(() => {
-    if (selectedDataset === 'normalized') {
-      if (records.length === 0) {
-        setNormalizedDetainees([]);
-        setTotalCount(0);
-      } else {
-        loadNormalizedDetainees(currentPage, searchQuery);
-      }
+    if (records.length === 0) {
+      setNormalizedDetainees([]);
+      setTotalCount(0);
+    } else {
+      loadNormalizedDetainees(currentPage, searchQuery);
     }
-  }, [records, selectedDataset, currentPage, searchQuery]);
+  }, [records, currentPage, searchQuery]);
 
-  // Extract unique categories for filter pills
-  const categories = useMemo(() => {
-    const cats = new Set<string>();
-    const safeRecs = Array.isArray(records) ? records : [];
-    safeRecs.forEach(r => {
-      if (r && r.category) cats.add(r.category);
-    });
-    return Array.from(cats);
-  }, [records]);
-
-  // Clean up stale category selection if category was deleted
-  useEffect(() => {
-    const safeCats = Array.isArray(categories) ? categories : [];
-    if (selectedDataset !== 'normalized' && selectedDataset !== 'all' && !safeCats.includes(selectedDataset)) {
-      setSelectedDataset('normalized');
-    }
-  }, [categories, selectedDataset]);
-
-  // Rows when in Normalized mode
-  const normalizedRows = useMemo(() => {
+  // Normalized rows
+  const activeRows = useMemo(() => {
     const list = Array.isArray(normalizedDetainees) ? normalizedDetainees : [];
     return list.map(d => ({
       id: d?.id || '',
@@ -143,60 +129,12 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     }));
   }, [normalizedDetainees]);
 
-  // Rows when in Raw mode
-  const rawParsedRows = useMemo(() => {
-    const safeRecs = Array.isArray(records) ? records : [];
-    const filtered = selectedDataset === 'all'
-      ? safeRecs
-      : safeRecs.filter(r => r && r.category === selectedDataset);
-
-    return filtered.map(rec => {
-      try {
-        const data = JSON.parse(rec?.dataJson || '{}');
-        const cleanedData: any = {};
-        Object.entries(data || {}).forEach(([k, v]) => {
-          if (k && !k.startsWith('__EMPTY') && k.trim() !== '') {
-            cleanedData[k.trim()] = formatCell(v);
-          }
-        });
-        return { 
-          id: rec?.id, 
-          category: rec?.category, 
-          createdAt: rec?.createdAt, 
-          __rawObj: data, 
-          ...cleanedData 
-        };
-      } catch {
-        return { id: rec?.id, category: rec?.category, raw: rec?.dataJson, __rawObj: {} };
-      }
-    });
-  }, [records, selectedDataset]);
-
-  const activeRows = useMemo(() => {
-    const rows = selectedDataset === 'normalized' ? normalizedRows : rawParsedRows;
-    return Array.isArray(rows) ? rows : [];
-  }, [selectedDataset, normalizedRows, rawParsedRows]);
-
-  // Extract dynamic column keys
+  // Columns
   const columns = useMemo(() => {
-    if (selectedDataset === 'normalized') {
-      return ['Name', 'Jacket #', 'Country', 'Age', 'Sex', 'Book Date', 'Departure Date', 'Agency', 'Charges', 'Judge Ordered', 'Penpal'];
-    }
-    const allKeysSet = new Set<string>();
-    const list = Array.isArray(activeRows) ? activeRows : [];
-    list.forEach(row => {
-      if (row) {
-        Object.keys(row).forEach(k => {
-          if (!['id', 'category', 'createdAt', 'raw', '__rawObj', '__normalizedRecord'].includes(k)) {
-            allKeysSet.add(k);
-          }
-        });
-      }
-    });
-    return Array.from(allKeysSet);
-  }, [selectedDataset, activeRows]);
+    return ['Name', 'Jacket #', 'Country', 'Age', 'Sex', 'Book Date', 'Departure Date', 'Agency', 'Charges', 'Judge Ordered', 'Penpal'];
+  }, []);
 
-  // Filter and sort with numeric collation and date range filtering
+  // Filter and sort with numeric collation
   const sortedRows = useMemo(() => {
     const list = Array.isArray(activeRows) ? activeRows : [];
     const query = searchQuery.toLowerCase().trim();
@@ -204,41 +142,10 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     let filtered = query === '' ? list : list.filter(row => {
       if (!row) return false;
       return Object.entries(row).some(([k, val]) => {
-        if (k === '__rawObj' || k === '__normalizedRecord') return false;
+        if (k === '__normalizedRecord') return false;
         return String(val ?? '').toLowerCase().includes(query);
       });
     });
-
-    // Apply date range filter if enabled
-    if (dateFilterField !== 'none' && (dateFilterStart || dateFilterEnd)) {
-      filtered = filtered.filter((row: any) => {
-        if (!row) return false;
-        let cellDate = '';
-        if (selectedDataset === 'normalized') {
-          cellDate = dateFilterField === 'book_date' ? String(row['Book Date'] || '') : String(row['Departure Date'] || '');
-        } else {
-          for (const [k, v] of Object.entries(row)) {
-            const lk = k.toLowerCase();
-            if (dateFilterField === 'book_date' && (lk.includes('book') || lk.includes('intake')) && v) {
-              cellDate = String(v);
-              break;
-            } else if (dateFilterField === 'departure_date' && (lk.includes('departure') || lk.includes('release')) && v) {
-              cellDate = String(v);
-              break;
-            }
-          }
-        }
-
-        if (!cellDate || cellDate === 'In Custody' || cellDate === 'Present') {
-          return false;
-        }
-
-        const cleanDate = cellDate.trim().substring(0, 10);
-        if (dateFilterStart && cleanDate < dateFilterStart) return false;
-        if (dateFilterEnd && cleanDate > dateFilterEnd) return false;
-        return true;
-      });
-    }
 
     if (!sortField) return filtered;
 
@@ -248,21 +155,14 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
       const cmp = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
       return sortAsc ? cmp : -cmp;
     });
-  }, [activeRows, searchQuery, sortField, sortAsc, dateFilterField, dateFilterStart, dateFilterEnd, selectedDataset]);
+  }, [activeRows, searchQuery, sortField, sortAsc]);
 
   // Pagination calculation
-  const totalPages = selectedDataset === 'normalized'
-    ? (Math.ceil(totalCount / PAGE_SIZE) || 1)
-    : (Math.ceil(sortedRows.length / PAGE_SIZE) || 1);
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE) || 1;
 
   const paginatedRows = useMemo(() => {
-    const list = Array.isArray(sortedRows) ? sortedRows : [];
-    if (selectedDataset === 'normalized') {
-      return list;
-    }
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return list.slice(start, start + PAGE_SIZE);
-  }, [selectedDataset, sortedRows, currentPage]);
+    return Array.isArray(sortedRows) ? sortedRows : [];
+  }, [sortedRows]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -279,14 +179,7 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
     setCurrentPage(1);
   };
 
-  const handleSelectDataset = (dataset: string) => {
-    setSelectedDataset(dataset);
-    setSortField(null);
-    setCurrentPage(1);
-  };
-
   const handleCellClick = (row: any, col: string, val: string) => {
-    if (selectedDataset !== 'normalized') return;
     setEditingCell({
       rowId: row.id,
       field: col,
@@ -449,42 +342,6 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
 
   return (
     <View style={styles.container}>
-      {/* Dataset Mode Switcher */}
-      <View style={styles.filterBar}>
-        <Text style={styles.filterLabel}>Dataset Mode:</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
-          <TouchableOpacity
-            style={[styles.filterPill, selectedDataset === 'normalized' && styles.activeFilterPill]}
-            onPress={() => handleSelectDataset('normalized')}
-          >
-            <Text style={[styles.filterPillText, selectedDataset === 'normalized' && styles.activeFilterPillText]}>
-              ✨ Normalized Detainees ({normalizedDetainees.length})
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.filterPill, selectedDataset === 'all' && styles.activeFilterPill]}
-            onPress={() => handleSelectDataset('all')}
-          >
-            <Text style={[styles.filterPillText, selectedDataset === 'all' && styles.activeFilterPillText]}>
-              All Raw Ingested ({records.length})
-            </Text>
-          </TouchableOpacity>
-
-          {categories.map(cat => (
-            <TouchableOpacity
-              key={cat}
-              style={[styles.filterPill, selectedDataset === cat && styles.activeFilterPill]}
-              onPress={() => handleSelectDataset(cat)}
-            >
-              <Text style={[styles.filterPillText, selectedDataset === cat && styles.activeFilterPillText]}>
-                {cat} ({records.filter(r => r.category === cat).length})
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-
       {/* Toolbar & Search */}
       <View style={styles.toolbar}>
         <TextInput
@@ -508,127 +365,27 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
         </View>
       </View>
 
-      {/* Date Filter Bar */}
-      <View style={styles.dateFilterBar}>
-        <View style={styles.dateFilterLeft}>
-          <Text style={styles.dateFilterTitle}>📅 Date Filter:</Text>
-          <View style={styles.dateFilterPills}>
-            <TouchableOpacity
-              style={[styles.dateFilterPill, dateFilterField === 'none' && styles.dateFilterPillActive]}
-              onPress={() => {
-                setDateFilterField('none');
-                setDateFilterStart('');
-                setDateFilterEnd('');
-                setCurrentPage(1);
-              }}
-            >
-              <Text style={[styles.dateFilterPillText, dateFilterField === 'none' && styles.dateFilterPillTextActive]}>
-                Off
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.dateFilterPill, dateFilterField === 'book_date' && styles.dateFilterPillActive]}
-              onPress={() => {
-                setDateFilterField('book_date');
-                setCurrentPage(1);
-              }}
-            >
-              <Text style={[styles.dateFilterPillText, dateFilterField === 'book_date' && styles.dateFilterPillTextActive]}>
-                Book Date
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.dateFilterPill, dateFilterField === 'departure_date' && styles.dateFilterPillActive]}
-              onPress={() => {
-                setDateFilterField('departure_date');
-                setCurrentPage(1);
-              }}
-            >
-              <Text style={[styles.dateFilterPillText, dateFilterField === 'departure_date' && styles.dateFilterPillTextActive]}>
-                Departure Date
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {dateFilterField !== 'none' && (
-          <View style={styles.dateFilterInputsRow}>
-            <View style={styles.dateFilterInputItem}>
-              <Text style={styles.dateFilterInputLabel}>From:</Text>
-              <DatePickerInput
-                value={dateFilterStart}
-                onChange={d => {
-                  setDateFilterStart(d);
-                  setCurrentPage(1);
-                }}
-                placeholder="Start Date"
-                compact
-                allowClear
-                title={`Filter ${dateFilterField === 'book_date' ? 'Book Date' : 'Departure Date'} From`}
-                style={{ width: 140 }}
-              />
-            </View>
-
-            <View style={styles.dateFilterInputItem}>
-              <Text style={styles.dateFilterInputLabel}>To:</Text>
-              <DatePickerInput
-                value={dateFilterEnd}
-                onChange={d => {
-                  setDateFilterEnd(d);
-                  setCurrentPage(1);
-                }}
-                placeholder="End Date"
-                compact
-                allowClear
-                title={`Filter ${dateFilterField === 'book_date' ? 'Book Date' : 'Departure Date'} To`}
-                style={{ width: 140 }}
-              />
-            </View>
-
-            {(!!dateFilterStart || !!dateFilterEnd) && (
-              <TouchableOpacity
-                style={styles.clearDateFilterBtn}
-                onPress={() => {
-                  setDateFilterStart('');
-                  setDateFilterEnd('');
-                  setCurrentPage(1);
-                }}
-              >
-                <Text style={styles.clearDateFilterBtnText}>✕ Reset Range</Text>
-              </TouchableOpacity>
-            )}
+      {/* Inline Editing Hint Bar */}
+      <View style={styles.inlineEditHintBar}>
+        <Text style={styles.inlineEditHintText}>
+          💡 Click any cell (or ✎) to edit in-place. Press <Text style={{ fontWeight: 'bold' }}>Enter</Text> or <Text style={{ fontWeight: 'bold' }}>✓</Text> to save. Click <Text style={{ fontWeight: 'bold' }}>View 🔍</Text> for full history.
+        </Text>
+        {toastMessage && (
+          <View style={styles.toastBadge}>
+            <Text style={styles.toastText}>{toastMessage}</Text>
           </View>
         )}
       </View>
-
-      {/* Inline Editing Hint Bar */}
-      {selectedDataset === 'normalized' && (
-        <View style={styles.inlineEditHintBar}>
-          <Text style={styles.inlineEditHintText}>
-            💡 Click any cell (or ✎) to edit in-place. Press <Text style={{ fontWeight: 'bold' }}>Enter</Text> or <Text style={{ fontWeight: 'bold' }}>✓</Text> to save. Click <Text style={{ fontWeight: 'bold' }}>View 🔍</Text> for full history.
-          </Text>
-          {toastMessage && (
-            <View style={styles.toastBadge}>
-              <Text style={styles.toastText}>{toastMessage}</Text>
-            </View>
-          )}
-        </View>
-      )}
 
       {/* Spreadsheet Table Grid */}
       <ScrollView horizontal contentContainerStyle={styles.horizontalScroll}>
         <View style={styles.table}>
           <View style={styles.headerRow}>
-            <View style={[styles.cell, styles.idCell]}>
-              <Text style={styles.headerText}>ID</Text>
-            </View>
             <View style={[styles.cell, styles.actionCell]}>
               <Text style={styles.headerText}>Detail</Text>
             </View>
             {columns.map(col => (
-              <TouchableOpacity key={col} style={[styles.cell, styles.dataCell]} onPress={() => handleSort(col)}>
+              <TouchableOpacity key={col} style={[styles.cell, styles.dataCell, { width: getColumnWidth(col) }]} onPress={() => handleSort(col)}>
                 <Text style={styles.headerText} numberOfLines={1}>
                   {col} {sortField === col ? (sortAsc ? '▲' : '▼') : ''}
                 </Text>
@@ -647,9 +404,6 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
                   key={row.id || index} 
                   style={[styles.row, index % 2 === 1 && styles.evenRow]}
                 >
-                  <View style={[styles.cell, styles.idCell]}>
-                    <Text style={styles.cellText} numberOfLines={1}>{row.id}</Text>
-                  </View>
                   <TouchableOpacity 
                     style={[styles.cell, styles.actionCell]}
                     onPress={() => handleRowClick(row)}
@@ -661,11 +415,12 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
                     const cellKey = `${row.id}:${col}`;
                     const isSaving = savingCellKey === cellKey;
                     const val = String(row[col] ?? '');
+                    const colWidth = getColumnWidth(col);
 
                     if (isEditing) {
                       const isDate = isDateColumn(col);
                       return (
-                        <View key={col} style={[styles.cell, styles.dataCell, styles.editingCellContainer]}>
+                        <View key={col} style={[styles.cell, styles.dataCell, styles.editingCellContainer, { width: colWidth }]}>
                           <TextInput
                             style={[styles.inlineInput, isDate && styles.inlineDateInput]}
                             value={editingCell.value}
@@ -703,19 +458,20 @@ export function SpreadsheetView({ records }: SpreadsheetViewProps) {
                         style={[
                           styles.cell,
                           styles.dataCell,
-                          selectedDataset === 'normalized' && styles.editableCell
+                          styles.editableCell,
+                          { width: colWidth }
                         ]}
                         onPress={() => handleCellClick(row, col, val)}
-                        activeOpacity={selectedDataset === 'normalized' ? 0.7 : 1}
+                        activeOpacity={0.7}
                       >
                         <Text style={styles.cellText} numberOfLines={2}>
-                          {val || (selectedDataset === 'normalized' ? '—' : '')}
+                          {val || '—'}
                         </Text>
                         {isSaving ? (
                           <ActivityIndicator size="small" color="#2563eb" style={{ marginLeft: 4 }} />
-                        ) : selectedDataset === 'normalized' ? (
+                        ) : (
                           <Text style={styles.editPencil}>{isDateColumn(col) ? '📅' : '✎'}</Text>
-                        ) : null}
+                        )}
                       </TouchableOpacity>
                     );
                   })}
@@ -855,81 +611,6 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 10,
   },
-  dateFilterBar: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  dateFilterLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  dateFilterTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#475569',
-  },
-  dateFilterPills: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  dateFilterPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    backgroundColor: '#f1f5f9',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  dateFilterPillActive: {
-    backgroundColor: '#eff6ff',
-    borderColor: '#3b82f6',
-  },
-  dateFilterPillText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748b',
-  },
-  dateFilterPillTextActive: {
-    color: '#1d4ed8',
-  },
-  dateFilterInputsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  dateFilterInputItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  dateFilterInputLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748b',
-  },
-  clearDateFilterBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 6,
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-  },
-  clearDateFilterBtnText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#dc2626',
-  },
   searchInput: {
     flex: 1,
     minWidth: 220,
@@ -989,11 +670,6 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 8,
     justifyContent: 'center',
-  },
-  idCell: {
-    width: 120,
-    borderRightWidth: 1,
-    borderRightColor: '#e2e8f0',
   },
   actionCell: {
     width: 80,

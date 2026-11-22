@@ -94,12 +94,13 @@ aildata/
 | `POST /api/admin/users/:id/password` | **Admin** | Direct manual password reset with per-user salt generation |
 | `DELETE /api/admin/users/:id` | **Admin** | Permanently deletes user account with self/sole-admin protections |
 | `GET /api/records` | Viewer | Returns raw staging dynamic records (supports `?category=`) |
+| `GET /api/records/categories` | Viewer | Returns category breakdown with staging and relational counts |
 | `GET /api/detainees` | Viewer | Returns normalized detainees joined with latest detention summary |
 | `GET /api/detainees/:id` | Viewer | Returns full master-detail relational profile |
 | `GET /api/stats` | Viewer | Returns server-side SQL analytics and live entity counts |
 | `POST /api/records/batch` | **Analyst** | Validates and atomically ingests rows into raw and relational tables |
-| `DELETE /api/records/category/:cat` | **Admin** | Deletes a specific imported spreadsheet category |
-| `DELETE /api/records` | **Admin** | Clears all dynamic records and cascades relational tables |
+| `DELETE /api/records/category/:cat` | **Admin** | Deletes category records (supports `?scope=staging`, `?scope=relational`, `?scope=all`) |
+| `DELETE /api/records` | **Admin** | Clears database records (supports `?scope=staging`, `?scope=relational`, `?scope=all`) |
 | `POST /api/maintenance/purge` | **Admin** | Triggers 1-year retention rollup and ephemeral purge on demand |
 
 ---

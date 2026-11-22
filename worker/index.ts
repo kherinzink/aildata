@@ -776,6 +776,34 @@ export default {
         return new Response(JSON.stringify(results), { status: 200, headers: corsHeaders });
       }
 
+      // 7b. Imported Spreadsheet Staging Categories Breakdown (Viewer+)
+      // Only returns categories currently present in dynamic_records staging.
+      if (path === '/api/records/categories' && method === 'GET') {
+        const query = `
+          SELECT 
+            dr.category,
+            COUNT(dr.id) as stagingCount,
+            COALESCE(dt_counts.detention_count, 0) as detentionCount
+          FROM dynamic_records dr
+          LEFT JOIN (
+            SELECT category, COUNT(*) as detention_count 
+            FROM detentions 
+            WHERE category IS NOT NULL 
+            GROUP BY category
+          ) dt_counts ON dr.category = dt_counts.category
+          WHERE dr.category IS NOT NULL
+          GROUP BY dr.category
+          ORDER BY dr.category ASC;
+        `;
+        const { results } = await env.DB.prepare(query).all();
+        const mapped = (results || []).map((r: any) => ({
+          category: r.category,
+          stagingCount: Number(r.stagingCount || 0),
+          detentionCount: Number(r.detentionCount || 0)
+        }));
+        return new Response(JSON.stringify(mapped), { status: 200, headers: corsHeaders });
+      }
+
       // 8. Detainees: Get Normalized Detainees list with latest detention summary (Viewer+)
       if (path === '/api/detainees' && method === 'GET') {
         const limitParam = url.searchParams.get('limit');
@@ -1103,23 +1131,19 @@ export default {
           // Record audit logs for modified entity types with before/after diffs
           if (detaineeUpdates.length > 0) {
             const dDiffs = diffs.filter(d => ['name', 'jacket_number', 'country', 'age', 'sex', 'race', 'ice_case_number'].includes(d.field));
-            const first = dDiffs[0];
-            await recordAuditLog(env.DB, authUser, 'DETAINEE_UPDATED', detaineeId, { changedFields, diffs: dDiffs, field: first?.field, before: first?.before, after: first?.after }, request);
+            await recordAuditLog(env.DB, authUser, 'DETAINEE_UPDATED', detaineeId, { changedFields, diffs: dDiffs }, request);
           }
           if (detentionEdited) {
             const dtDiffs = diffs.filter(d => d.field.startsWith('detention_'));
-            const first = dtDiffs[0];
-            await recordAuditLog(env.DB, authUser, 'DETAINED_RECORD_EDITED', detaineeId, { changedFields, diffs: dtDiffs, field: first?.field, before: first?.before, after: first?.after }, request);
+            await recordAuditLog(env.DB, authUser, 'DETAINED_RECORD_EDITED', detaineeId, { changedFields, diffs: dtDiffs }, request);
           }
           if (hasCharges) {
             const chDiffs = diffs.filter(d => d.field === 'charges');
-            const first = chDiffs[0];
-            await recordAuditLog(env.DB, authUser, 'CHARGE_MODIFIED', detaineeId, { changedFields, diffs: chDiffs, field: 'charges', before: first?.before, after: first?.after }, request);
+            await recordAuditLog(env.DB, authUser, 'CHARGE_MODIFIED', detaineeId, { changedFields, diffs: chDiffs }, request);
           }
           if (legalModified) {
             const lgDiffs = diffs.filter(d => d.field === 'decision_date' || d.field === 'judge_ordered');
-            const first = lgDiffs[0];
-            await recordAuditLog(env.DB, authUser, 'LEGAL_PROCEEDING_MODIFIED', detaineeId, { changedFields, diffs: lgDiffs, field: first?.field, before: first?.before, after: first?.after }, request);
+            await recordAuditLog(env.DB, authUser, 'LEGAL_PROCEEDING_MODIFIED', detaineeId, { changedFields, diffs: lgDiffs }, request);
           }
         }
 
@@ -1517,19 +1541,44 @@ export default {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to reset database' }), { status: 403, headers: corsHeaders });
         }
-        await env.DB.batch([
-          env.DB.prepare('DELETE FROM dynamic_records;'),
-          env.DB.prepare('DELETE FROM correspondence;'),
-          env.DB.prepare('DELETE FROM legal_proceedings;'),
-          env.DB.prepare('DELETE FROM charges;'),
-          env.DB.prepare('DELETE FROM detentions;'),
-          env.DB.prepare('DELETE FROM detainees;'),
-          env.DB.prepare('DELETE FROM aggregate_rollups;')
-        ]);
-        return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
+        const scope = url.searchParams.get('scope') || 'all';
+
+        if (scope === 'staging') {
+          // Purge all raw staging records and safely orphan all detentions without removing them from normalized tables
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM dynamic_records;'),
+            env.DB.prepare('UPDATE detentions SET category = NULL WHERE category IS NOT NULL;')
+          ]);
+          await recordAuditLog(env.DB, authUser, 'DATABASE_STAGING_PURGED', null, { scope: 'staging', orphanedRelational: true }, request);
+          return new Response(JSON.stringify({ success: true, scope: 'staging', orphanedRelational: true }), { status: 200, headers: corsHeaders });
+        } else if (scope === 'relational') {
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM correspondence;'),
+            env.DB.prepare('DELETE FROM legal_proceedings;'),
+            env.DB.prepare('DELETE FROM charges;'),
+            env.DB.prepare('DELETE FROM detentions;'),
+            env.DB.prepare('DELETE FROM detainees;'),
+            env.DB.prepare('DELETE FROM aggregate_rollups;')
+          ]);
+          await recordAuditLog(env.DB, authUser, 'DATABASE_RELATIONAL_CLEARED', null, { scope: 'relational' }, request);
+          return new Response(JSON.stringify({ success: true, scope: 'relational' }), { status: 200, headers: corsHeaders });
+        } else {
+          // Full Reset (scope === 'all')
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM dynamic_records;'),
+            env.DB.prepare('DELETE FROM correspondence;'),
+            env.DB.prepare('DELETE FROM legal_proceedings;'),
+            env.DB.prepare('DELETE FROM charges;'),
+            env.DB.prepare('DELETE FROM detentions;'),
+            env.DB.prepare('DELETE FROM detainees;'),
+            env.DB.prepare('DELETE FROM aggregate_rollups;')
+          ]);
+          await recordAuditLog(env.DB, authUser, 'DATABASE_CLEARED', null, { scope: 'all' }, request);
+          return new Response(JSON.stringify({ success: true, scope: 'all' }), { status: 200, headers: corsHeaders });
+        }
       }
 
-      // 13. Records: Delete By Category (Admin only - fully cascades across normalized tables)
+      // 13. Records: Delete By Category (Admin only)
       if (path.startsWith('/api/records/category/') && method === 'DELETE') {
         if (authUser.role !== 'admin') {
           return new Response(JSON.stringify({ error: 'Forbidden: Admin role required to delete category records' }), { status: 403, headers: corsHeaders });
@@ -1538,35 +1587,69 @@ export default {
         if (!category) {
           return new Response(JSON.stringify({ error: 'Category required' }), { status: 400, headers: corsHeaders });
         }
+        const scope = url.searchParams.get('scope') || 'all';
 
-        await env.DB.batch([
-          // 1. Delete raw staging records for this category
-          env.DB.prepare('DELETE FROM dynamic_records WHERE category = ?;').bind(category),
-          // 2. Delete charges linked to detentions in this category
-          env.DB.prepare(`
-            DELETE FROM charges 
-            WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
-          `).bind(category),
-          // 3. Delete legal proceedings linked to detentions in this category
-          env.DB.prepare(`
-            DELETE FROM legal_proceedings 
-            WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
-          `).bind(category),
-          // 4. Delete detentions in this category
-          env.DB.prepare('DELETE FROM detentions WHERE category = ?;').bind(category),
-          // 5. Delete correspondence for detainees who no longer have detentions
-          env.DB.prepare(`
-            DELETE FROM correspondence 
-            WHERE detainee_id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
-          `),
-          // 6. Delete orphaned detainees who no longer have detentions
-          env.DB.prepare(`
-            DELETE FROM detainees 
-            WHERE id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
-          `)
-        ]);
-
-        return new Response(JSON.stringify({ success: true, category }), { status: 200, headers: corsHeaders });
+        if (scope === 'staging') {
+          // Delete raw staging records and safely orphan related detentions without removing them from normalized tables
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM dynamic_records WHERE category = ?;').bind(category),
+            env.DB.prepare('UPDATE detentions SET category = NULL WHERE category = ?;').bind(category)
+          ]);
+          await recordAuditLog(env.DB, authUser, 'CATEGORY_STAGING_DELETED', null, { category, scope: 'staging', orphanedRelational: true }, request);
+          return new Response(JSON.stringify({ success: true, category, scope: 'staging', orphanedRelational: true }), { status: 200, headers: corsHeaders });
+        } else if (scope === 'relational') {
+          // Delete ONLY normalized relational records linked to detentions in this category
+          await env.DB.batch([
+            // 1. Delete charges linked to detentions in this category
+            env.DB.prepare(`
+              DELETE FROM charges 
+              WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
+            `).bind(category),
+            // 2. Delete legal proceedings linked to detentions in this category
+            env.DB.prepare(`
+              DELETE FROM legal_proceedings 
+              WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
+            `).bind(category),
+            // 3. Delete detentions in this category
+            env.DB.prepare('DELETE FROM detentions WHERE category = ?;').bind(category),
+            // 4. Delete correspondence for detainees who no longer have detentions
+            env.DB.prepare(`
+              DELETE FROM correspondence 
+              WHERE detainee_id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
+            `),
+            // 5. Delete orphaned detainees who no longer have detentions
+            env.DB.prepare(`
+              DELETE FROM detainees 
+              WHERE id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
+            `)
+          ]);
+          await recordAuditLog(env.DB, authUser, 'CATEGORY_RELATIONAL_DELETED', null, { category, scope: 'relational' }, request);
+          return new Response(JSON.stringify({ success: true, category, scope: 'relational' }), { status: 200, headers: corsHeaders });
+        } else {
+          // Default / Legacy 'all' cascade
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM dynamic_records WHERE category = ?;').bind(category),
+            env.DB.prepare(`
+              DELETE FROM charges 
+              WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
+            `).bind(category),
+            env.DB.prepare(`
+              DELETE FROM legal_proceedings 
+              WHERE detention_id IN (SELECT id FROM detentions WHERE category = ?)
+            `).bind(category),
+            env.DB.prepare('DELETE FROM detentions WHERE category = ?;').bind(category),
+            env.DB.prepare(`
+              DELETE FROM correspondence 
+              WHERE detainee_id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
+            `),
+            env.DB.prepare(`
+              DELETE FROM detainees 
+              WHERE id NOT IN (SELECT DISTINCT detainee_id FROM detentions)
+            `)
+          ]);
+          await recordAuditLog(env.DB, authUser, 'CATEGORY_DELETED', null, { category, scope: 'all' }, request);
+          return new Response(JSON.stringify({ success: true, category, scope: 'all' }), { status: 200, headers: corsHeaders });
+        }
       }
 
       // 14. Maintenance: Run 1-Year Retention Purge & Rollup (Admin only)

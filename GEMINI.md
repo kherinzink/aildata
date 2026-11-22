@@ -35,9 +35,9 @@
 
 ## 4. API Routing & RBAC Summary
 - **Public Routes:** `GET /api/auth/setup-status`, `POST /api/auth/login`, `POST /api/auth/register` (First-Use setup only), `GET /api/auth/invite/:token`, `POST /api/auth/activate`.
-- **Viewer Routes (Read-only):** `GET /api/records`, `GET /api/detainees`, `GET /api/detainees/:id`, `GET /api/stats`.
+- **Viewer Routes (Read-only):** `GET /api/records`, `GET /api/records/categories`, `GET /api/detainees`, `GET /api/detainees/:id`, `GET /api/stats`.
 - **Analyst Routes:** `POST /api/records/batch` (spreadsheet ingestion).
-- **Admin Routes:** User management (`GET /api/admin/users`, `PATCH /api/admin/users/:id/role`, `PATCH /api/admin/users/:id/status`, `POST /api/admin/users/:id/unlock`, `POST /api/admin/users/:id/reset-invite`, `POST /api/admin/users/:id/password`, `DELETE /api/admin/users/:id`), category deletion (`DELETE /api/records/category/:cat`), database reset (`DELETE /api/records`), and maintenance purge (`POST /api/maintenance/purge`).
+- **Admin Routes:** User management (`GET /api/admin/users`, `PATCH /api/admin/users/:id/role`, `PATCH /api/admin/users/:id/status`, `POST /api/admin/users/:id/unlock`, `POST /api/admin/users/:id/reset-invite`, `POST /api/admin/users/:id/password`, `DELETE /api/admin/users/:id`), scoped category deletion (`DELETE /api/records/category/:cat?scope=staging|relational|all`), scoped database reset (`DELETE /api/records?scope=staging|relational|all`), and maintenance purge (`POST /api/maintenance/purge`).
 
 ## 5. Documentation & Security Enhancement Mandates
 - **Documentation Updates:** Any new functionality designed or implemented by Gemini must be followed up by corresponding documentation updates for the repository (e.g., updating `TECHNICAL_ARCHITECTURE.md`, `SECURITY_REVIEW.md`, or relevant documentation guides).
