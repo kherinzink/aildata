@@ -125,6 +125,9 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
   const [loadingAuditLogs, setLoadingAuditLogs] = useState<boolean>(true);
   const [auditActionFilter, setAuditActionFilter] = useState<string>('ALL');
   const [selectedLogMetadata, setSelectedLogMetadata] = useState<AuditLogEntry | null>(null);
+  const [auditTotalCount, setAuditTotalCount] = useState<number>(0);
+  const [auditCurrentPage, setAuditCurrentPage] = useState<number>(1);
+  const [auditPageSize, setAuditPageSize] = useState<number>(5);
 
   // State: Imported Spreadsheet Categories
   const [categories, setCategories] = useState<CategoryBreakdown[]>([]);
@@ -160,17 +163,29 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
     }
   };
 
-  const loadAuditLogs = async (isSilent: boolean = false) => {
+  const loadAuditLogs = async (
+    page: number = auditCurrentPage,
+    size: number = auditPageSize,
+    action: string = auditActionFilter,
+    isSilent: boolean = false
+  ) => {
     if (!isSilent) setLoadingAuditLogs(true);
     try {
-      const actionParam = auditActionFilter === 'ALL' ? undefined : auditActionFilter;
-      const res = await getAuditLogs(200, 0, actionParam);
+      const actionParam = action === 'ALL' ? undefined : action;
+      const offset = (page - 1) * size;
+      const res = await getAuditLogs(size, offset, actionParam);
       setAuditLogs(res.logs || []);
+      setAuditTotalCount(typeof res.total === 'number' ? res.total : (res.logs || []).length);
     } catch (err: any) {
       console.error('Failed to load audit logs:', err);
     } finally {
       if (!isSilent) setLoadingAuditLogs(false);
     }
+  };
+
+  const handleAuditPageChange = (newPage: number) => {
+    setAuditCurrentPage(newPage);
+    loadAuditLogs(newPage, auditPageSize, auditActionFilter, false);
   };
 
   const loadCategories = async (isSilent: boolean = false) => {
@@ -257,18 +272,19 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
 
   useEffect(() => {
     loadUsers();
-    loadAuditLogs();
+    loadAuditLogs(1, 5, 'ALL');
     loadCategories();
   }, []);
 
   useEffect(() => {
-    loadAuditLogs(true);
-  }, [auditActionFilter]);
+    setAuditCurrentPage(1);
+    loadAuditLogs(1, auditPageSize, auditActionFilter, true);
+  }, [auditActionFilter, auditPageSize]);
 
   const handleRefresh = () => {
     setRefreshing(true);
     loadUsers(true);
-    loadAuditLogs(true);
+    loadAuditLogs(auditCurrentPage, auditPageSize, auditActionFilter, true);
     loadCategories(true);
   };
 
@@ -584,6 +600,10 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
         return { bg: '#f0fdf4', border: '#bbf7d0', text: '#15803d' };
     }
   };
+
+  const auditTotalPages = Math.max(1, Math.ceil(auditTotalCount / auditPageSize));
+  const auditStartCount = auditTotalCount === 0 ? 0 : (auditCurrentPage - 1) * auditPageSize + 1;
+  const auditEndCount = Math.min(auditCurrentPage * auditPageSize, auditTotalCount);
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -992,7 +1012,9 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
             </Text>
           </View>
           <Text style={styles.countBadge}>
-            Showing {auditLogs.length} events
+            {auditTotalCount > 0 
+              ? `Showing ${auditStartCount}–${auditEndCount} of ${auditTotalCount} events`
+              : '0 events'}
           </Text>
         </View>
 
@@ -1110,6 +1132,67 @@ export function AdminView({ currentUser, onDataChanged }: AdminViewProps) {
                 </View>
               </View>
             ))}
+          </View>
+        )}
+
+        {/* Audit Log Pagination Bar */}
+        {auditTotalCount > 0 && (
+          <View style={styles.auditPaginationBar}>
+            <View style={styles.auditPageSizeGroup}>
+              <Text style={styles.auditPageSizeLabel}>Per page:</Text>
+              {[5, 10, 25, 50].map(size => (
+                <TouchableOpacity
+                  key={size}
+                  style={[styles.auditPageSizePill, auditPageSize === size && styles.auditPageSizePillActive]}
+                  onPress={() => {
+                    setAuditPageSize(size);
+                    setAuditCurrentPage(1);
+                  }}
+                >
+                  <Text style={[styles.auditPageSizeText, auditPageSize === size && styles.auditPageSizeTextActive]}>
+                    {size}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.auditPaginationButtons}>
+              <TouchableOpacity
+                style={[styles.pageButton, auditCurrentPage <= 1 && styles.disabledButton]}
+                disabled={auditCurrentPage <= 1 || loadingAuditLogs}
+                onPress={() => handleAuditPageChange(1)}
+              >
+                <Text style={styles.pageButtonText}>« First</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.pageButton, auditCurrentPage <= 1 && styles.disabledButton]}
+                disabled={auditCurrentPage <= 1 || loadingAuditLogs}
+                onPress={() => handleAuditPageChange(auditCurrentPage - 1)}
+              >
+                <Text style={styles.pageButtonText}>‹ Prev</Text>
+              </TouchableOpacity>
+
+              <Text style={styles.pageIndicator}>
+                Page {auditCurrentPage} of {auditTotalPages}
+              </Text>
+
+              <TouchableOpacity
+                style={[styles.pageButton, auditCurrentPage >= auditTotalPages && styles.disabledButton]}
+                disabled={auditCurrentPage >= auditTotalPages || loadingAuditLogs}
+                onPress={() => handleAuditPageChange(auditCurrentPage + 1)}
+              >
+                <Text style={styles.pageButtonText}>Next ›</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.pageButton, auditCurrentPage >= auditTotalPages && styles.disabledButton]}
+                disabled={auditCurrentPage >= auditTotalPages || loadingAuditLogs}
+                onPress={() => handleAuditPageChange(auditTotalPages)}
+              >
+                <Text style={styles.pageButtonText}>Last »</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </View>
@@ -2323,6 +2406,73 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontWeight: '700',
     fontSize: 12,
+  },
+  auditPaginationBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  auditPageSizeGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  auditPageSizeLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748b',
+    marginRight: 2,
+  },
+  auditPageSizePill: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+  },
+  auditPageSizePillActive: {
+    backgroundColor: '#334155',
+    borderColor: '#334155',
+  },
+  auditPageSizeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  auditPageSizeTextActive: {
+    color: '#ffffff',
+  },
+  auditPaginationButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  pageButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 6,
+  },
+  pageButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  pageIndicator: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+    paddingHorizontal: 4,
   },
   disabledButton: {
     opacity: 0.5,
