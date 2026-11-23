@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
 import { DynamicRecord, registerUser, getDashboardStats, DashboardStats } from '../services/dataService';
 import { BarChart, LineChart, DonutChart, HorizontalBarGauge } from '../components/Charts';
+import { WorldHeatMap } from '../components/WorldHeatMap';
 import { DatePickerInput, parseISODate } from '../components/DatePicker';
 
 interface DashboardViewProps {
@@ -179,6 +180,18 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
         value: r.count,
         percentage: r.percentage,
         color: colors[i % colors.length]
+      }));
+    }
+    return [];
+  }, [serverStats]);
+
+  // Chart data: World Heat Map
+  const worldHeatMapData = useMemo(() => {
+    if (serverStats?.originDistribution && serverStats.originDistribution.length > 0) {
+      return serverStats.originDistribution.map(r => ({
+        country: r.country,
+        count: r.count,
+        percentage: r.percentage
       }));
     }
     return [];
@@ -368,8 +381,20 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
         </View>
       </View>
 
-      {/* Column Aggregations */}
+      {/* Charts Row 3: World Heat Map & Top Countries */}
       <View style={styles.rowGrid}>
+        {/* World Heat Map Section */}
+        <View style={styles.halfSection}>
+          <View style={styles.chartTitleRow}>
+            <Text style={styles.sectionTitle}>🗺️ Global Country Custody Heat Map</Text>
+            <View style={[styles.kpiPill, { backgroundColor: '#eff6ff', borderColor: '#bfdbfe' }]}>
+              <Text style={[styles.kpiPillText, { color: '#1d4ed8' }]}>Choropleth View</Text>
+            </View>
+          </View>
+          <Text style={styles.chartSubtitle}>Geographic heat intensity distribution of normalized detainees</Text>
+          <WorldHeatMap data={worldHeatMapData} height={260} />
+        </View>
+
         {/* Top Countries */}
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>🌍 Top Countries of Origin (COO)</Text>
@@ -384,7 +409,10 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
             ))
           )}
         </View>
+      </View>
 
+      {/* Top Delivering Agencies & Sex Distribution */}
+      <View style={styles.rowGrid}>
         {/* Top Delivering Agencies */}
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>🏛️ Top Delivering Agencies</Text>
@@ -399,10 +427,7 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
             ))
           )}
         </View>
-      </View>
 
-      {/* Sex Distribution & Active Sheets */}
-      <View style={styles.rowGrid}>
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>👥 Sex Distribution</Text>
           {sexDistribution.length === 0 ? (
@@ -416,7 +441,10 @@ export function DashboardView({ records, storageMode, tables, currentUser, onDat
             ))
           )}
         </View>
+      </View>
 
+      {/* Raw Ingested Sheet Categories */}
+      <View style={styles.rowGrid}>
         <View style={styles.halfSection}>
           <Text style={styles.sectionTitle}>📁 Raw Ingested Sheet Categories</Text>
           <Text style={[styles.sectionDesc, { fontSize: 12, marginBottom: 8 }]}>
